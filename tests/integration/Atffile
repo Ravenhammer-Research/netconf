@@ -1,0 +1,117 @@
+# Integration tests for the networking tool
+
+# Test client-server communication
+atf_test_case test_client_server_communication
+test_client_server_communication_head() {
+    atf_set "descr" "Test basic client-server communication"
+    atf_set "require.user" "root"
+    atf_set "timeout" "30"
+}
+test_client_server_communication_body() {
+    # Start the server in background
+    ./netd &
+    server_pid=$!
+    
+    # Wait for server to start
+    sleep 2
+    
+    # Test basic commands
+    atf_check -s exit:0 ./net show interface
+    atf_check -s exit:0 ./net show route
+    
+    # Clean up
+    kill $server_pid
+    wait $server_pid 2>/dev/null || true
+}
+
+# Test interface configuration
+atf_test_case test_interface_configuration
+test_interface_configuration_head() {
+    atf_set "descr" "Test interface configuration functionality"
+    atf_set "require.user" "root"
+    atf_set "timeout" "60"
+}
+test_interface_configuration_body() {
+    # Start the server
+    ./netd &
+    server_pid=$!
+    sleep 2
+    
+    # Find a test interface (loopback is safe)
+    test_if="lo0"
+    
+    # Test IPv4 configuration
+    atf_check -s exit:0 ./net "set interface ethernet $test_if inet addr 127.0.0.2/32"
+    
+    # Verify the configuration
+    atf_check -s exit:0 -o match:"127.0.0.2" ./net show interface
+    
+    # Clean up
+    kill $server_pid
+    wait $server_pid 2>/dev/null || true
+}
+
+# Test route configuration
+atf_test_case test_route_configuration
+test_route_configuration_head() {
+    atf_set "descr" "Test route configuration functionality"
+    atf_set "require.user" "root"
+    atf_set "timeout" "60"
+}
+test_route_configuration_body() {
+    # Start the server
+    ./netd &
+    server_pid=$!
+    sleep 2
+    
+    # Test adding a route
+    atf_check -s exit:0 ./net "set route protocols static inet 192.168.99.0/24 127.0.0.1"
+    
+    # Verify the route was added
+    atf_check -s exit:0 -o match:"192.168.99.0" ./net show route
+    
+    # Test deleting the route
+    atf_check -s exit:0 ./net "delete route protocols static inet 192.168.99.0/24 127.0.0.1"
+    
+    # Clean up
+    kill $server_pid
+    wait $server_pid 2>/dev/null || true
+}
+
+# Test FIB functionality
+atf_test_case test_fib_functionality
+test_fib_functionality_head() {
+    atf_set "descr" "Test FIB (routing table) functionality"
+    atf_set "require.user" "root"
+    atf_set "timeout" "60"
+}
+test_fib_functionality_body() {
+    # Check if multiple FIBs are available
+    if ! sysctl net.fibs >/dev/null 2>&1; then
+        atf_skip "Multiple FIBs not configured"
+    fi
+    
+    fib_count=$(sysctl -n net.fibs)
+    if [ "$fib_count" -lt 2 ]; then
+        atf_skip "Need at least 2 FIBs for testing"
+    fi
+    
+    # Start the server
+    ./netd &
+    server_pid=$!
+    sleep 2
+    
+    # Test FIB-specific route
+    atf_check -s exit:0 ./net "set route protocols static fib 1 inet 192.168.100.0/24 127.0.0.1"
+    
+    # Clean up
+    kill $server_pid
+    wait $server_pid 2>/dev/null || true
+}
+
+atf_init_test_cases() {
+    atf_add_test_case test_client_server_communication
+    atf_add_test_case test_interface_configuration
+    atf_add_test_case test_route_configuration
+    atf_add_test_case test_fib_functionality
+} 

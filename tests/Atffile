@@ -1,0 +1,9 @@
+# Kyua test configuration for FreeBSD networking tool
+# This file defines the test suite structure
+
+# Test suite metadata
+test_suite: "netconf"
+test_suite_description: "FreeBSD Network Configuration Tool Tests"
+
+# Include all test files
+include: "**/Atffile" 

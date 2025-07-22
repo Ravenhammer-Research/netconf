@@ -1,0 +1,32 @@
+# Unit tests for the networking tool
+
+# Test the command parser
+atf_test_case test_command_parsing
+test_command_parsing_head() {
+    atf_set "descr" "Test command parsing functionality"
+    atf_set "require.user" "root"
+}
+test_command_parsing_body() {
+    # Test basic command parsing
+    atf_check -s exit:0 -o match:"show interface" ./test_commands show interface
+    atf_check -s exit:0 -o match:"set interface" ./test_commands "set interface ethernet em0 inet addr 192.168.1.100/24"
+    atf_check -s exit:0 -o match:"set route" ./test_commands "set route protocols static inet 0.0.0.0/0 192.168.1.1"
+}
+
+# Test invalid commands
+atf_test_case test_invalid_commands
+test_invalid_commands_head() {
+    atf_set "descr" "Test handling of invalid commands"
+    atf_set "require.user" "root"
+}
+test_invalid_commands_body() {
+    # Test invalid command format
+    atf_check -s exit:1 ./test_commands "invalid command"
+    atf_check -s exit:1 ./test_commands "show invalid_target"
+    atf_check -s exit:1 ./test_commands "set invalid_target"
+}
+
+atf_init_test_cases() {
+    atf_add_test_case test_command_parsing
+    atf_add_test_case test_invalid_commands
+} 
