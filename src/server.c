@@ -1,177 +1,149 @@
 #include "common.h"
+#include <sys/un.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <signal.h>
+#include <unistd.h>
+#include <errno.h>
 
-static int server_sock = -1;
-static int client_sock = -1;
+#define SOCKET_PATH "/var/run/netd.sock"
+#define MAX_CMD_LEN 1024
+#define MAX_RESPONSE_LEN 4096
+
+// Forward declarations
+extern int load_configuration(void);
+extern int init_yang_context(void);
+extern void cleanup_yang_context(void);
+
+static int server_socket = -1;
 
 static void cleanup(void) {
-    if (client_sock >= 0) {
-        close(client_sock);
-    }
-    if (server_sock >= 0) {
-        close(server_sock);
+    if (server_socket >= 0) {
+        close(server_socket);
         unlink(SOCKET_PATH);
     }
+    cleanup_yang_context();
 }
 
-static int setup_server(void) {
-    server_sock = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (server_sock < 0) {
+static void signal_handler(int sig) {
+    printf("Received signal %d, shutting down...\n", sig);
+    cleanup();
+    exit(0);
+}
+
+int main(void) {
+    struct sockaddr_un addr;
+    struct sigaction sa;
+    
+    // Set up signal handlers
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = signal_handler;
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+    
+    // Create socket
+    server_socket = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (server_socket < 0) {
         perror("socket");
-        return -1;
+        return 1;
     }
 
     // Remove existing socket file
     unlink(SOCKET_PATH);
 
-    struct sockaddr_un addr;
+    // Bind socket
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
 
-    if (bind(server_sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+    if (bind(server_socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         perror("bind");
-        return -1;
-    }
-
-    if (listen(server_sock, 5) < 0) {
-        perror("listen");
-        return -1;
+        cleanup();
+        return 1;
     }
 
     // Set socket permissions
     chmod(SOCKET_PATH, 0666);
 
-    return 0;
-}
-
-static int accept_client(void) {
-    struct sockaddr_un client_addr;
-    socklen_t addr_len = sizeof(client_addr);
-    
-    client_sock = accept(server_sock, (struct sockaddr*)&client_addr, &addr_len);
-    if (client_sock < 0) {
-        perror("accept");
-        return -1;
-    }
-    
-    return 0;
-}
-
-static int receive_command(char *cmd, size_t max_len) {
-    size_t len;
-    if (recv(client_sock, &len, sizeof(len), 0) < 0) {
-        perror("recv length");
-        return -1;
-    }
-    
-    if (len >= max_len) {
-        fprintf(stderr, "Command too large\n");
-        return -1;
-    }
-    
-    size_t received = 0;
-    while (received < len) {
-        ssize_t n = recv(client_sock, cmd + received, len - received, 0);
-        if (n < 0) {
-            perror("recv command");
-            return -1;
-        }
-        received += n;
-    }
-    
-    cmd[len] = '\0';
-    return 0;
-}
-
-static int send_response(const char *response) {
-    size_t len = strlen(response);
-    if (send(client_sock, &len, sizeof(len), 0) < 0) {
-        perror("send length");
-        return -1;
-    }
-    
-    if (send(client_sock, response, len, 0) < 0) {
-        perror("send response");
-        return -1;
-    }
-    
-    return 0;
-}
-
-static void handle_client(void) {
-    char cmd[MAX_CMD_LEN];
-    char response[MAX_RESPONSE_LEN];
-    
-    while (1) {
-        if (receive_command(cmd, sizeof(cmd)) < 0) {
-            break;
-        }
-        
-        // Check if this is a NETCONF XML message
-        if (strstr(cmd, "<?xml") != NULL || strstr(cmd, "<rpc") != NULL) {
-            // This is a NETCONF message, handle it directly
-            if (strstr(cmd, "<get-config>") != NULL) {
-                // Handle get-config
-                char response_buf[MAX_RESPONSE_LEN];
-                if (handle_netconf_get_config("", response_buf, sizeof(response_buf)) == 0) {
-                    send_response(response_buf);
-                } else {
-                    send_response("Error: Failed to execute NETCONF get-config\n");
-                }
-            } else if (strstr(cmd, "<edit-config>") != NULL) {
-                // Handle edit-config
-                char response_buf[MAX_RESPONSE_LEN];
-                if (handle_netconf_edit_config("", response_buf, sizeof(response_buf)) == 0) {
-                    send_response(response_buf);
-                } else {
-                    send_response("Error: Failed to execute NETCONF edit-config\n");
-                }
-            } else if (strstr(cmd, "<commit/>") != NULL) {
-                // Handle commit
-                char response_buf[MAX_RESPONSE_LEN];
-                if (handle_netconf_commit(response_buf, sizeof(response_buf)) == 0) {
-                    send_response(response_buf);
-                } else {
-                    send_response("Error: Failed to execute NETCONF commit\n");
-                }
-            } else {
-                send_response("Error: Unknown NETCONF operation\n");
-            }
-        } else {
-            // Regular command parsing
-            command_t parsed_cmd;
-            if (parse_command(cmd, &parsed_cmd) == 0) {
-                if (execute_command(&parsed_cmd, response, sizeof(response)) == 0) {
-                    send_response(response);
-                } else {
-                    send_response("Error: Failed to execute command\n");
-                }
-            } else {
-                send_response("Error: Invalid command format\n");
-            }
-        }
-    }
-}
-
-int main(void) {
-    atexit(cleanup);
-    
-    if (setup_server() < 0) {
-        fprintf(stderr, "Failed to setup server\n");
+    // Listen for connections
+    if (listen(server_socket, 5) < 0) {
+        perror("listen");
+        cleanup();
         return 1;
-    }
-    
+}
+
     printf("netd server started, listening on %s\n", SOCKET_PATH);
     
+    // Initialize YANG context
+    if (init_yang_context() != 0) {
+        fprintf(stderr, "Failed to initialize YANG context\n");
+        cleanup();
+        return 1;
+        }
+    
+    // Load configuration on startup
+    if (load_configuration() == 0) {
+        printf("Configuration loaded from /usr/local/etc/net.conf\n");
+    } else {
+        printf("No configuration file found, starting with default settings\n");
+    }
+    
+    // Main server loop
     while (1) {
-        if (accept_client() < 0) {
+        struct sockaddr_un client_addr;
+        socklen_t client_len = sizeof(client_addr);
+        
+        int client_socket = accept(server_socket, (struct sockaddr*)&client_addr, &client_len);
+        if (client_socket < 0) {
+            perror("accept");
             continue;
         }
         
-        handle_client();
-        close(client_sock);
-        client_sock = -1;
+        // Handle client request
+        size_t cmd_len;
+        ssize_t n = recv(client_socket, &cmd_len, sizeof(cmd_len), 0);
+        if (n == sizeof(cmd_len)) {
+            if (cmd_len > 0 && cmd_len < MAX_CMD_LEN) {
+                char cmd_buf[MAX_CMD_LEN];
+                size_t received = 0;
+                while (received < cmd_len) {
+                    n = recv(client_socket, cmd_buf + received, cmd_len - received, 0);
+                    if (n <= 0) break;
+                    received += n;
+                }
+                cmd_buf[cmd_len] = '\0';
+                printf("DEBUG: Received command: '%s'\n", cmd_buf);
+                
+                // Parse and execute command
+                command_t cmd;
+                if (parse_command(cmd_buf, &cmd) == 0) {
+                    printf("DEBUG: Parsed command type: %d\n", cmd.type);
+                    char response[MAX_RESPONSE_LEN];
+                    if (execute_command(&cmd, response, sizeof(response)) == 0) {
+                        printf("DEBUG: Command executed successfully, response length: %zu\n", strlen(response));
+                        // Send response with length prefix
+                        size_t resp_len = strlen(response);
+                        send(client_socket, &resp_len, sizeof(resp_len), 0);
+                        send(client_socket, response, resp_len, 0);
+                } else {
+                        printf("DEBUG: Command execution failed\n");
+                        size_t resp_len = strlen(response);
+                        send(client_socket, &resp_len, sizeof(resp_len), 0);
+                        send(client_socket, response, resp_len, 0);
+                }
+                } else {
+                    printf("DEBUG: Command parsing failed\n");
+                    const char *error = "Error: Invalid command\n";
+                    size_t resp_len = strlen(error);
+                    send(client_socket, &resp_len, sizeof(resp_len), 0);
+                    send(client_socket, error, resp_len, 0);
+        }
+            }
+        }
+        
+        close(client_socket);
     }
     
+    cleanup();
     return 0;
 } 

@@ -1,0 +1,57 @@
+module netd-routing {
+  yang-version 1.1;
+  namespace "urn:netd:routing";
+  prefix netd-rt;
+
+  import ietf-routing {
+    prefix rt;
+  }
+  import ietf-inet-types {
+    prefix inet;
+  }
+
+  organization "NetD Project";
+  contact "netd@example.com";
+  description "Routing configuration for NetD";
+
+  revision 2024-01-01 {
+    description "Initial version";
+  }
+
+  augment "/rt:routing/rt:routing-instance/rt:routing-protocols/rt:routing-protocol/rt:static-routes" {
+    description "Add FIB support to static routes";
+    
+    container static-route {
+      description "Static route configuration";
+      
+      list route {
+        key "destination";
+        description "Static route entry";
+        
+        leaf destination {
+          type inet:ip-prefix;
+          description "Destination network";
+        }
+        
+        leaf gateway {
+          type inet:ip-address;
+          mandatory true;
+          description "Gateway address";
+        }
+        
+        leaf fib {
+          type uint32 {
+            range "0..255";
+          }
+          description "FIB (routing table) number for this route";
+          default 0;
+        }
+        
+        leaf description {
+          type string;
+          description "Route description";
+        }
+      }
+    }
+  }
+} 

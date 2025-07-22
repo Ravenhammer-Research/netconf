@@ -1,14 +1,14 @@
 CC=		cc
 CFLAGS=		-Wall -Wextra -std=c99 -D_BSD_SOURCE -I/usr/local/include
-LDFLAGS=	-L/usr/local/lib -lnetconf2 -lssh -lcrypto -lssl -lutil -lreadline -lbsdxml
+LDFLAGS=	-L/usr/local/lib -lnetconf2 -lyang -lssh -lcrypto -lssl -lutil -lreadline -lbsdxml
 # Build targets
 all: net netd test_commands
 
 net: client.o netconf_client.o commands.o
 	$(CC) -o net client.o netconf_client.o commands.o $(LDFLAGS)
 
-netd: server.o netconf_server.o ifconfig.o route.o commands.o
-	$(CC) -o netd server.o netconf_server.o ifconfig.o route.o commands.o $(LDFLAGS)
+netd: server.o netconf_server.o netconf_yang.o ifconfig.o route.o commands.o
+	$(CC) -o netd server.o netconf_server.o netconf_yang.o ifconfig.o route.o commands.o $(LDFLAGS)
 
 test_commands: commands.o
 	@mkdir -p tests/unit
@@ -30,6 +30,9 @@ server.o: src/server.c src/common.h
 netconf_server.o: src/netconf_server.c src/common.h
 	$(CC) $(CFLAGS) -c src/netconf_server.c
 
+netconf_yang.o: src/netconf_yang.c src/common.h
+	$(CC) $(CFLAGS) -c src/netconf_yang.c
+
 ifconfig.o: src/ifconfig.c src/common.h
 	$(CC) $(CFLAGS) -c src/ifconfig.c
 
@@ -43,5 +46,7 @@ clean:
 install: net netd
 	install -m 755 net /usr/local/bin/
 	install -m 755 netd /usr/local/sbin/
+	install -d /usr/local/share/yang
+	install -m 644 yang/netd-simple.yang /usr/local/share/yang/
 
 .PHONY: all clean install

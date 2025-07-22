@@ -1,0 +1,56 @@
+module netd-interfaces {
+  yang-version 1.1;
+  namespace "urn:netd:interfaces";
+  prefix netd-if;
+
+  import ietf-interfaces {
+    prefix if;
+  }
+  import ietf-ip {
+    prefix ip;
+  }
+
+  organization "NetD Project";
+  contact "netd@example.com";
+  description "Network interface configuration for NetD";
+
+  revision 2024-01-01 {
+    description "Initial version";
+  }
+
+  augment "/if:interfaces/if:interface" {
+    description "Add FIB support to interfaces";
+    
+    leaf fib {
+      type uint32 {
+        range "0..255";
+      }
+      description "FIB (routing table) number for this interface";
+      default 0;
+    }
+  }
+
+  augment "/if:interfaces/if:interface/ip:ipv4/ip:address" {
+    description "Add FIB support to IPv4 addresses";
+    
+    leaf fib {
+      type uint32 {
+        range "0..255";
+      }
+      description "FIB (routing table) number for this IPv4 address";
+      default 0;
+    }
+  }
+
+  augment "/if:interfaces/if:interface/ip:ipv6/ip:address" {
+    description "Add FIB support to IPv6 addresses";
+    
+    leaf fib {
+      type uint32 {
+        range "0..255";
+      }
+      description "FIB (routing table) number for this IPv6 address";
+      default 0;
+    }
+  }
+} 

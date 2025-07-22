@@ -131,28 +131,31 @@ int show_interfaces(char *response, size_t resp_len) {
     }
     
     snprintf(resp_ptr, remaining, "%-12s %-8s %-18s %-18s %s\n", 
-             "Interface", "Status", "IPv4 Address", "IPv6 Address", "Flags");
+             "Interface", "Flags", "IPv4 Address", "IPv6 Address", "MTU");
     resp_ptr += strlen(resp_ptr);
     remaining = resp_len - (resp_ptr - response);
     
-    for (i = if_ni; i->if_index != 0 || i->if_name != NULL; i++) {
+    for (i = if_ni; i->if_index != 0 && i->if_name != NULL; i++) {
         struct ifreq ifr;
         memset(&ifr, 0, sizeof(ifr));
         strncpy(ifr.ifr_name, i->if_name, IFNAMSIZ - 1);
         
-        char status[16] = "DOWN";
         char ipv4_addr[18] = "-";
         char ipv6_addr[18] = "-";
+        char mtu_str[8] = "-";
         char flags_str[64] = "";
         
-        // Get flags
+        // Get flags and MTU
         if (ioctl(sock, SIOCGIFFLAGS, &ifr) >= 0) {
-            if (ifr.ifr_flags & IFF_UP) strcpy(status, "UP");
-            
             // Build flags string
             if (ifr.ifr_flags & IFF_LOOPBACK) strcat(flags_str, "LOOPBACK ");
             if (ifr.ifr_flags & IFF_POINTOPOINT) strcat(flags_str, "POINTOPOINT ");
             if (ifr.ifr_flags & IFF_MULTICAST) strcat(flags_str, "MULTICAST ");
+            
+            // Get MTU
+            if (ioctl(sock, SIOCGIFMTU, &ifr) >= 0) {
+                snprintf(mtu_str, sizeof(mtu_str), "%d", ifr.ifr_mtu);
+            }
         }
         
         // Get IPv4 address
@@ -175,7 +178,7 @@ int show_interfaces(char *response, size_t resp_len) {
         }
         
         snprintf(resp_ptr, remaining, "%-12s %-8s %-18s %-18s %s\n",
-                 i->if_name, status, ipv4_addr, ipv6_addr, flags_str);
+                 i->if_name, flags_str, ipv4_addr, ipv6_addr, mtu_str);
         resp_ptr += strlen(resp_ptr);
         remaining = resp_len - (resp_ptr - response);
         
@@ -202,114 +205,64 @@ int show_interfaces_filtered(char *response, size_t resp_len, const char *filter
         return -1;
     }
     
-    // If no filter, show all interfaces in detailed format
+    // If no filter, show all interfaces in tabular format
     if (!filter || strlen(filter) == 0) {
-        for (i = if_ni; i->if_index != 0 || i->if_name != NULL; i++) {
+        // Table header
+        snprintf(resp_ptr, remaining, "%-12s %-18s %-18s %s\n", 
+                 "Interface", "IPv4 Address", "IPv6 Address", "MTU");
+        resp_ptr += strlen(resp_ptr);
+        remaining = resp_len - (resp_ptr - response);
+        
+        for (i = if_ni; i->if_index != 0 && i->if_name != NULL; i++) {
             struct ifreq ifr;
             memset(&ifr, 0, sizeof(ifr));
             strncpy(ifr.ifr_name, i->if_name, IFNAMSIZ - 1);
             
-            // Get flags
+            char ipv4_addr[18] = "-";
+            char ipv6_addr[18] = "-";
+            char mtu_str[8] = "-";
+            
+            // Get MTU
             if (ioctl(sock, SIOCGIFFLAGS, &ifr) >= 0) {
-                snprintf(resp_ptr, remaining, "%s: flags=%x<", i->if_name, ifr.ifr_flags);
-                resp_ptr += strlen(resp_ptr);
-                remaining = resp_len - (resp_ptr - response);
-                
-                // Build flags string
-                if (ifr.ifr_flags & IFF_UP) { strcat(resp_ptr, "UP,"); resp_ptr += 3; }
-                if (ifr.ifr_flags & IFF_BROADCAST) { strcat(resp_ptr, "BROADCAST,"); resp_ptr += 10; }
-                if (ifr.ifr_flags & IFF_DEBUG) { strcat(resp_ptr, "DEBUG,"); resp_ptr += 6; }
-                if (ifr.ifr_flags & IFF_LOOPBACK) { strcat(resp_ptr, "LOOPBACK,"); resp_ptr += 9; }
-                if (ifr.ifr_flags & IFF_POINTOPOINT) { strcat(resp_ptr, "POINTOPOINT,"); resp_ptr += 12; }
-                // IFF_SMART doesn't exist on FreeBSD, removing this line
-                if (ifr.ifr_flags & IFF_RUNNING) { strcat(resp_ptr, "RUNNING,"); resp_ptr += 8; }
-                if (ifr.ifr_flags & IFF_NOARP) { strcat(resp_ptr, "NOARP,"); resp_ptr += 6; }
-                if (ifr.ifr_flags & IFF_PROMISC) { strcat(resp_ptr, "PROMISC,"); resp_ptr += 8; }
-                if (ifr.ifr_flags & IFF_ALLMULTI) { strcat(resp_ptr, "ALLMULTI,"); resp_ptr += 9; }
-                if (ifr.ifr_flags & IFF_OACTIVE) { strcat(resp_ptr, "OACTIVE,"); resp_ptr += 8; }
-                if (ifr.ifr_flags & IFF_SIMPLEX) { strcat(resp_ptr, "SIMPLEX,"); resp_ptr += 8; }
-                if (ifr.ifr_flags & IFF_LINK0) { strcat(resp_ptr, "LINK0,"); resp_ptr += 6; }
-                if (ifr.ifr_flags & IFF_LINK1) { strcat(resp_ptr, "LINK1,"); resp_ptr += 6; }
-                if (ifr.ifr_flags & IFF_LINK2) { strcat(resp_ptr, "LINK2,"); resp_ptr += 6; }
-                if (ifr.ifr_flags & IFF_MULTICAST) { strcat(resp_ptr, "MULTICAST,"); resp_ptr += 10; }
-                
-                // Remove trailing comma
-                if (resp_ptr > response && *(resp_ptr-1) == ',') {
-                    *(resp_ptr-1) = '>';
-                    resp_ptr++;
-                } else {
-                    strcat(resp_ptr, ">");
-                    resp_ptr++;
+                if (ioctl(sock, SIOCGIFMTU, &ifr) >= 0) {
+                    snprintf(mtu_str, sizeof(mtu_str), "%d", ifr.ifr_mtu);
                 }
-                
-                snprintf(resp_ptr, remaining, " metric 0 mtu %d\n", ifr.ifr_mtu);
-                resp_ptr += strlen(resp_ptr);
-                remaining = resp_len - (resp_ptr - response);
-                
-                // Get IPv4 address and netmask
-                if (ioctl(sock, SIOCGIFADDR, &ifr) >= 0) {
-                    struct sockaddr_in *sin = (struct sockaddr_in*)&ifr.ifr_addr;
-                    
-                    // Get netmask separately
-                    struct ifreq ifr_netmask;
-                    memset(&ifr_netmask, 0, sizeof(ifr_netmask));
-                    strncpy(ifr_netmask.ifr_name, i->if_name, IFNAMSIZ - 1);
-                    if (ioctl(sock, SIOCGIFNETMASK, &ifr_netmask) >= 0) {
-                        struct sockaddr_in *sin_netmask = (struct sockaddr_in*)&ifr_netmask.ifr_addr;
-                        
-                        // Get broadcast address
-                        struct ifreq ifr_broadcast;
-                        memset(&ifr_broadcast, 0, sizeof(ifr_broadcast));
-                        strncpy(ifr_broadcast.ifr_name, i->if_name, IFNAMSIZ - 1);
-                        if (ioctl(sock, SIOCGIFBRDADDR, &ifr_broadcast) >= 0) {
-                            struct sockaddr_in *sin_broadcast = (struct sockaddr_in*)&ifr_broadcast.ifr_addr;
-                            snprintf(resp_ptr, remaining, "\tinet %s netmask 0x%x broadcast %s\n",
-                                     inet_ntoa(sin->sin_addr), 
-                                     ntohl(sin_netmask->sin_addr.s_addr),
-                                     inet_ntoa(sin_broadcast->sin_addr));
-                        } else {
-                            snprintf(resp_ptr, remaining, "\tinet %s netmask 0x%x\n",
-                                     inet_ntoa(sin->sin_addr), 
-                                     ntohl(sin_netmask->sin_addr.s_addr));
-                        }
-                        resp_ptr += strlen(resp_ptr);
-                        remaining = resp_len - (resp_ptr - response);
-                    }
-                }
-                
-                // Get IPv6 address
-                int sock6 = socket(AF_INET6, SOCK_DGRAM, 0);
-                if (sock6 >= 0) {
-                    struct in6_ifreq ifr6;
-                    memset(&ifr6, 0, sizeof(ifr6));
-                    strncpy(ifr6.ifr_name, i->if_name, IFNAMSIZ - 1);
-                    
-                    if (ioctl(sock6, SIOCGIFADDR_IN6, &ifr6) >= 0) {
-                        char ipv6_str[INET6_ADDRSTRLEN];
-                        inet_ntop(AF_INET6, &ifr6.ifr_addr.sin6_addr, ipv6_str, sizeof(ipv6_str));
-                        snprintf(resp_ptr, remaining, "\tinet6 %s prefixlen %d\n", ipv6_str, ifr6.ifr_addr.sin6_scope_id);
-                        resp_ptr += strlen(resp_ptr);
-                        remaining = resp_len - (resp_ptr - response);
-                    }
-                    close(sock6);
-                }
-                
-                snprintf(resp_ptr, remaining, "\tmedia: Ethernet autoselect\n");
-                resp_ptr += strlen(resp_ptr);
-                remaining = resp_len - (resp_ptr - response);
-                
-                if (remaining <= 0) break;
             }
+            
+            // Get IPv4 address
+            if (ioctl(sock, SIOCGIFADDR, &ifr) >= 0) {
+                struct sockaddr_in *sin = (struct sockaddr_in*)&ifr.ifr_addr;
+                inet_ntop(AF_INET, &sin->sin_addr, ipv4_addr, sizeof(ipv4_addr));
+            }
+            
+            // Get IPv6 address
+            int sock6 = socket(AF_INET6, SOCK_DGRAM, 0);
+            if (sock6 >= 0) {
+                struct in6_ifreq ifr6;
+                memset(&ifr6, 0, sizeof(ifr6));
+                strncpy(ifr6.ifr_name, i->if_name, IFNAMSIZ - 1);
+                
+                if (ioctl(sock6, SIOCGIFADDR_IN6, &ifr6) >= 0) {
+                    inet_ntop(AF_INET6, &ifr6.ifr_addr.sin6_addr, ipv6_addr, sizeof(ipv6_addr));
+                }
+                close(sock6);
+            }
+            
+            int written = snprintf(resp_ptr, remaining, "%-12s %-18s %-18s %s\n",
+                     i->if_name, ipv4_addr, ipv6_addr, mtu_str);
+            if (written < 0 || (size_t)written >= remaining) break;
+            resp_ptr += written;
+            remaining -= written;
         }
     } else {
         // Filter by interface type
         // Add table header for filtered display
-        snprintf(resp_ptr, remaining, "%-12s %-8s %-18s %-18s %s\n", 
-                 "Interface", "Status", "IPv4 Address", "IPv6 Address", "Flags");
+        snprintf(resp_ptr, remaining, "%-12s %-18s %-18s %s\n", 
+                 "Interface", "IPv4 Address", "IPv6 Address", "MTU");
         resp_ptr += strlen(resp_ptr);
         remaining = resp_len - (resp_ptr - response);
         
-        for (i = if_ni; i->if_index != 0 || i->if_name != NULL; i++) {
+        for (i = if_ni; i->if_index != 0 && i->if_name != NULL; i++) {
             // Check if interface name matches the filter type
             // For ethernet interfaces, look for em*, igb*, ix*, etc.
             if (strcmp(filter, "ethernet") == 0) {
@@ -367,19 +320,15 @@ int show_interfaces_filtered(char *response, size_t resp_len, const char *filter
             memset(&ifr, 0, sizeof(ifr));
             strncpy(ifr.ifr_name, i->if_name, IFNAMSIZ - 1);
             
-            char status[16] = "DOWN";
             char ipv4_addr[18] = "-";
             char ipv6_addr[18] = "-";
-            char flags_str[64] = "";
+            char mtu_str[8] = "-";
             
-            // Get flags
+            // Get MTU
             if (ioctl(sock, SIOCGIFFLAGS, &ifr) >= 0) {
-                if (ifr.ifr_flags & IFF_UP) strcpy(status, "UP");
-                
-                // Build flags string
-                if (ifr.ifr_flags & IFF_LOOPBACK) strcat(flags_str, "LOOPBACK ");
-                if (ifr.ifr_flags & IFF_POINTOPOINT) strcat(flags_str, "POINTOPOINT ");
-                if (ifr.ifr_flags & IFF_MULTICAST) strcat(flags_str, "MULTICAST ");
+                if (ioctl(sock, SIOCGIFMTU, &ifr) >= 0) {
+                    snprintf(mtu_str, sizeof(mtu_str), "%d", ifr.ifr_mtu);
+                }
             }
             
             // Get IPv4 address
@@ -401,8 +350,8 @@ int show_interfaces_filtered(char *response, size_t resp_len, const char *filter
                 close(sock6);
             }
             
-            snprintf(resp_ptr, remaining, "%-12s %-8s %-18s %-18s %s\n",
-                     i->if_name, status, ipv4_addr, ipv6_addr, flags_str);
+            snprintf(resp_ptr, remaining, "%-12s %-18s %-18s %s\n",
+                     i->if_name, ipv4_addr, ipv6_addr, mtu_str);
             resp_ptr += strlen(resp_ptr);
             remaining = resp_len - (resp_ptr - response);
             

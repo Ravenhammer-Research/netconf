@@ -23,7 +23,7 @@
 
 #define SOCKET_PATH "/var/run/netd.sock"
 #define MAX_CMD_LEN 1024
-#define MAX_RESPONSE_LEN 4096
+#define MAX_RESPONSE_LEN 16384
 
 // Command types
 typedef enum {
@@ -82,10 +82,20 @@ int execute_command(command_t *cmd, char *response, size_t resp_len);
 void print_usage(void);
 int show_interfaces_filtered(char *response, size_t resp_len, const char *filter);
 
+// Configuration file handling
+int save_configuration(void);
+int load_configuration(void);
+
 // NETCONF function prototypes
 int parse_netconf_message(const char *xml_msg, command_t *cmd);
 int handle_netconf_get_config(const char *filter, char *response, size_t resp_len);
 int handle_netconf_edit_config(const char *config, char *response, size_t resp_len);
 int handle_netconf_commit(char *response, size_t resp_len);
+
+// YANG/NETCONF function prototypes
+int init_yang_context(void);
+void cleanup_yang_context(void);
+int handle_netconf_get_config_yang(const char *filter, char *response, size_t resp_len);
+int handle_netconf_edit_config_yang(const char *config_xml, char *response, size_t resp_len);
 
 #endif // COMMON_H 
