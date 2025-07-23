@@ -6,21 +6,24 @@ A FreeBSD application that provides ifconfig and route functionality using a NET
 
 - NETCONF-style command syntax
 - Interactive and one-shot command modes
-- Direct ioctl and routing socket operations (no system() calls)
-- Support for IPv4 and IPv6
-- FIB (routing table) support
+- Interface configuration
+- Route management
 - Tabular output for show commands
+- Support for tap/tun interface creation
+- Configuration persistence
+- YANG model integration
 
 ## Prerequisites
 
 - FreeBSD system
 - libnetconf2 development libraries
-- libxml2 development libraries
+- libyang development libraries
 - OpenSSL development libraries
+- libssh development libraries
 
 Install dependencies:
 ```bash
-pkg install libnetconf2 libxml2 openssl
+pkg install libnetconf2 libyang openssl libssh
 ```
 
 ## Building
@@ -30,8 +33,8 @@ make
 ```
 
 This will create:
-- `bin/net` - The client application
-- `bin/netd` - The server daemon
+- `net` - The client application
+- `netd` - The server daemon
 
 ## Installation
 
@@ -67,8 +70,8 @@ This starts an interactive session where you can enter commands:
 
 ```
 net> show interface
-net> set interface ethernet em0 inet addr 192.168.1.100/24
-net> set route protocols static inet 0.0.0.0/0 192.168.1.1
+net> set interface tap tap5 inet address 192.168.0.0/31
+net> set route protocol static inet default 192.168.0.1
 net> commit
 net> save
 net> quit
@@ -78,8 +81,8 @@ net> quit
 
 ```bash
 net show interface
-net set interface ethernet em0 inet addr 192.168.1.100/24
-net set route protocols static inet 0.0.0.0/0 192.168.1.1
+net set interface tap tap5 inet address 192.168.0.0/31
+net set route protocol static inet default 192.168.0.1
 net commit
 net save
 ```
@@ -90,16 +93,19 @@ net save
 
 ```
 show interface                                    # Show all interfaces
-set interface ethernet <if> inet addr <addr>/<prefix> [fib N]
-set interface ethernet <if> inet6 addr <addr>/<prefix> [fib N]
+show interface <filter>                           # Show filtered interfaces
+set interface <type> <name> inet address <addr>/<prefix>
+set interface <type> <name> inet6 address <addr>/<prefix>
 ```
 
 ### Route Commands
 
 ```
-set route protocols static [fib N] inet <dest> <gw>
-set route protocols static [fib N] inet6 <dest> <gw>
-delete route protocols static [fib N]            # Delete all static routes
+show route                                        # Show routing table
+show route fib <n>                                # Show routes for specific FIB
+set route protocol static inet <dest> <gw>
+set route protocol static inet6 <dest> <gw>
+delete route static                               # Delete all static routes
 ```
 
 ### System Commands
@@ -107,6 +113,8 @@ delete route protocols static [fib N]            # Delete all static routes
 ```
 commit                                           # Apply queued changes
 save                                             # Persist configuration
+help                                             # Show help
+quit                                             # Exit interactive mode
 ```
 
 ## Examples
@@ -114,30 +122,30 @@ save                                             # Persist configuration
 ### Configure Interface
 
 ```bash
-# Set IPv4 address on em0
-net set interface ethernet em0 inet addr 192.168.1.100/24
+# Set IPv4 address on tap interface
+net set interface tap tap5 inet address 192.168.0.0/31
 
-# Set IPv6 address on em0
-net set interface ethernet em0 inet6 addr 2001:db8::100/64
+# Set IPv6 address on tap interface
+net set interface tap tap6 inet6 address 2001:db8::100/64
 
-# Set address with specific FIB
-net set interface ethernet em0 inet addr 10.0.0.100/24 fib 1
+# Show specific interface
+net show interface tap5
 ```
 
 ### Configure Routes
 
 ```bash
 # Add default route
-net set route protocols static inet 0.0.0.0/0 192.168.1.1
+net set route protocol static inet default 192.168.0.1
 
 # Add specific route
-net set route protocols static inet 10.0.0.0/24 192.168.1.254
+net set route protocol static inet 10.0.0.0/24 192.168.0.254
 
 # Add IPv6 route
-net set route protocols static inet6 2001:db8::/64 2001:db8::1
+net set route protocol static inet6 2001:db8::/64 2001:db8::1
 
-# Add route with specific FIB
-net set route protocols static fib 1 inet 0.0.0.0/0 10.0.0.1
+# Show routes for specific FIB
+net show route fib 1
 ```
 
 ### Show Information
@@ -146,9 +154,41 @@ net set route protocols static fib 1 inet 0.0.0.0/0 10.0.0.1
 # Show all interfaces
 net show interface
 
+# Show tap interfaces only
+net show interface tap
+
 # Show routing table
 net show route
+
+# Show routes for FIB 1
+net show route fib 1
 ```
+
+## Recent Improvements
+
+### Interface Configuration
+- Fixed interface address setting using system calls to ifconfig
+- Added support for tap/tun interface creation
+- Improved address parsing with CIDR notation
+- Added netmask display in interface listings
+
+### Command Parsing
+- Rewrote command parser with lexer-based approach
+- Added structured command and target definitions
+- Improved error handling and validation
+- Fixed parsing of interface type and name
+
+### Display Improvements
+- Added IPv4 address netmask display (e.g., `192.168.0.0/31`)
+- Improved tabular output formatting
+- Added FIB value detection and display
+- Enhanced interface information gathering
+
+### Configuration Management
+- Implemented configuration saving and loading
+- Added YANG model integration
+- Improved NETCONF protocol support
+- Enhanced error handling and debugging
 
 ## Architecture
 
@@ -161,22 +201,36 @@ Communication is via UNIX domain sockets for security and performance.
 
 ## Implementation Details
 
-- Uses direct ioctl calls for interface configuration (no system() calls to ifconfig)
-- Uses routing sockets for route management (no system() calls to route)
+- Uses system calls to ifconfig for interface configuration
+- Uses routing sockets for route management
 - Supports both IPv4 and IPv6 addressing
-- Implements FIB (routing table) support
 - Provides tabular output for show commands
+- Includes YANG model validation
+- Supports configuration persistence
+
+## Debugging
+
+The server includes extensive debug output that can be enabled by running:
+
+```bash
+sudo netd
+```
+
+Debug output shows:
+- Command parsing steps
+- Interface configuration operations
+- Address parsing and validation
+- System call results and error codes
 
 ## Future Enhancements
 
 - Full NETCONF protocol support using libnetconf2
-- Configuration validation
-- Transaction support
-- Configuration rollback
-- Support for additional interface types
-- VLAN support
-- Bridge configuration
+- Configuration validation with YANG models
+- Transaction support with rollback
+- Support for additional interface types (bridge, VLAN)
 - Firewall rule management
+- Network namespace support
+- Performance optimizations
 
 ## License
 

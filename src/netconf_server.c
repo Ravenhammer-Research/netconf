@@ -4,6 +4,8 @@
 
 #define CONFIG_FILE "/usr/local/etc/net.conf"
 #define CONFIG_BACKUP "/usr/local/etc/net.conf.bak"
+#define MAX_LINE_LENGTH 1024
+#define MAX_SECTION_LENGTH 64
 
 // Forward declarations
 extern int configure_interface(const if_config_t *config);
@@ -12,47 +14,344 @@ extern int configure_route(const route_config_t *config);
 extern int remove_route(const route_config_t *config);
 extern int show_routes(char *response, size_t resp_len, int fib_filter, const char *protocol_filter, int family_filter);
 
-// NETCONF message parsing functions are now declared in common.h
+// Configuration section types
+typedef enum {
+    SECTION_NONE,
+    SECTION_INTERFACE,
+    SECTION_ROUTE_STATIC
+} section_type_t;
 
-// Configuration file handling
+// Configuration parser state
+typedef struct {
+    char current_section[MAX_SECTION_LENGTH];
+    section_type_t section_type;
+    char interface_name[IFNAMSIZ];
+    int route_index;
+} config_parser_t;
+
+// Initialize configuration parser
+static void config_parser_init(config_parser_t *parser) {
+    memset(parser, 0, sizeof(config_parser_t));
+    parser->section_type = SECTION_NONE;
+    parser->route_index = -1;
+}
+
+// Parse section header [section]
+static int parse_section_header(const char *line, config_parser_t *parser) {
+    if (line[0] != '[' || !strchr(line, ']')) {
+        return -1;
+    }
+    
+    char *end = strchr(line, ']');
+    size_t len = end - line - 1;
+    if (len <= 0 || len >= sizeof(parser->current_section) - 1) {
+        return -1;
+    }
+    
+    strncpy(parser->current_section, line + 1, len);
+    parser->current_section[len] = '\0';
+    
+    // Determine section type
+    if (strncmp(parser->current_section, "interface.", 10) == 0) {
+        parser->section_type = SECTION_INTERFACE;
+        strncpy(parser->interface_name, parser->current_section + 10, sizeof(parser->interface_name) - 1);
+    } else if (strncmp(parser->current_section, "route.static.", 13) == 0) {
+        parser->section_type = SECTION_ROUTE_STATIC;
+        parser->route_index = atoi(parser->current_section + 13);
+    } else {
+        parser->section_type = SECTION_NONE;
+    }
+    
+    return 0;
+}
+
+// Parse key=value pair
+static int parse_key_value(const char *line, char **key, char **value) {
+    char *equals = strchr(line, '=');
+    if (!equals) {
+        return -1;
+    }
+    
+    *equals = '\0';
+    *key = (char*)line;
+    *value = equals + 1;
+    
+    // Trim whitespace from key
+    while (**key == ' ' || **key == '\t') (*key)++;
+    char *end = *key + strlen(*key) - 1;
+    while (end > *key && (*end == ' ' || *end == '\t')) *end-- = '\0';
+    
+    // Trim whitespace from value
+    while (**value == ' ' || **value == '\t') (*value)++;
+    end = *value + strlen(*value) - 1;
+    while (end > *value && (*end == ' ' || *end == '\t')) *end-- = '\0';
+    
+    return 0;
+}
+
+// Parse CIDR notation (address/prefix)
+static int parse_cidr_address(const char *value, char *addr_str, size_t addr_len, int *prefix_len) {
+    char *slash = strchr(value, '/');
+    if (!slash) {
+        return -1;
+    }
+    
+    size_t addr_part_len = slash - value;
+    if (addr_part_len >= addr_len) {
+        return -1;
+    }
+    
+    strncpy(addr_str, value, addr_part_len);
+    addr_str[addr_part_len] = '\0';
+    *prefix_len = atoi(slash + 1);
+    
+    return 0;
+}
+
+// Apply interface configuration
+static int apply_interface_config(const char *ifname, const char *key, const char *value) {
+    if_config_t config;
+    memset(&config, 0, sizeof(config));
+    strncpy(config.name, ifname, sizeof(config.name) - 1);
+    
+    if (strcmp(key, "inet") == 0) {
+        char addr_str[INET_ADDRSTRLEN];
+        int prefix_len;
+        
+        if (parse_cidr_address(value, addr_str, sizeof(addr_str), &prefix_len) == 0) {
+            config.family = ADDR_FAMILY_INET4;
+            config.prefix_len = prefix_len;
+            
+            if (inet_pton(AF_INET, addr_str, &config.addr) == 1) {
+                return configure_interface(&config);
+            }
+        }
+    } else if (strcmp(key, "inet6") == 0) {
+        char addr_str[INET6_ADDRSTRLEN];
+        int prefix_len;
+        
+        if (parse_cidr_address(value, addr_str, sizeof(addr_str), &prefix_len) == 0) {
+            config.family = ADDR_FAMILY_INET6;
+            config.prefix_len = prefix_len;
+            
+            if (inet_pton(AF_INET6, addr_str, &config.addr6) == 1) {
+                return configure_interface(&config);
+            }
+        }
+    }
+    
+    return -1;
+}
+
+// Apply route configuration
+static int apply_route_config(const char *key, const char *value) {
+    route_config_t config;
+    memset(&config, 0, sizeof(config));
+    
+    if (strcmp(key, "destination") == 0) {
+        char addr_str[INET6_ADDRSTRLEN];
+        int prefix_len;
+        
+        if (parse_cidr_address(value, addr_str, sizeof(addr_str), &prefix_len) == 0) {
+            config.prefix_len = prefix_len;
+            
+            // Determine family from address format
+            if (strchr(addr_str, ':')) {
+                config.family = ADDR_FAMILY_INET6;
+                if (inet_pton(AF_INET6, addr_str, &config.dest6) == 1) {
+                    // TODO: Get gateway from next line and configure route
+                    return 0;
+                }
+            } else {
+                config.family = ADDR_FAMILY_INET4;
+                if (inet_pton(AF_INET, addr_str, &config.dest) == 1) {
+                    // TODO: Get gateway from next line and configure route
+                    return 0;
+                }
+            }
+        }
+    }
+    
+    return -1;
+}
+
+// Parse configuration line
+static int parse_config_line(const char *line, config_parser_t *parser) {
+    // Skip comments and empty lines
+    if (line[0] == '#' || line[0] == '\n' || line[0] == '\0') {
+        return 0;
+    }
+    
+    // Parse section headers
+    if (line[0] == '[') {
+        return parse_section_header(line, parser);
+    }
+    
+    // Parse key=value pairs
+    char *key, *value;
+    if (parse_key_value(line, &key, &value) != 0) {
+        return 0; // Skip malformed lines
+    }
+    
+    // Apply configuration based on section type
+    switch (parser->section_type) {
+        case SECTION_INTERFACE:
+            return apply_interface_config(parser->interface_name, key, value);
+            
+        case SECTION_ROUTE_STATIC:
+            return apply_route_config(key, value);
+            
+        default:
+            return 0; // Unknown section, ignore
+    }
+}
+
+// Create backup of existing configuration
+static int create_config_backup(void) {
+    if (access(CONFIG_FILE, F_OK) == 0) {
+        return rename(CONFIG_FILE, CONFIG_BACKUP);
+    }
+    return 0; // No existing file to backup
+}
+
+// Restore configuration from backup
+static int restore_config_backup(void) {
+    if (access(CONFIG_BACKUP, F_OK) == 0) {
+        return rename(CONFIG_BACKUP, CONFIG_FILE);
+    }
+    return -1;
+}
+
+// Write configuration header
+static int write_config_header(FILE *fp) {
+    if (fprintf(fp, "# Network configuration for netd\n") < 0) return -1;
+    if (fprintf(fp, "# Generated automatically - do not edit manually\n\n") < 0) return -1;
+    return 0;
+}
+
+// Write interface configuration template
+static int write_interface_template(FILE *fp) {
+    if (fprintf(fp, "# Interface configurations\n") < 0) return -1;
+    if (fprintf(fp, "# [interface.<name>]\n") < 0) return -1;
+    if (fprintf(fp, "# inet=<ipv4>/<prefix>\n") < 0) return -1;
+    if (fprintf(fp, "# inet6=<ipv6>/<prefix>\n") < 0) return -1;
+    if (fprintf(fp, "# fib=<number>\n\n") < 0) return -1;
+    return 0;
+}
+
+// Write route configuration template
+static int write_route_template(FILE *fp) {
+    if (fprintf(fp, "# Route configurations\n") < 0) return -1;
+    if (fprintf(fp, "# [route.static.<index>]\n") < 0) return -1;
+    if (fprintf(fp, "# destination=<dest>/<prefix>\n") < 0) return -1;
+    if (fprintf(fp, "# gateway=<gateway>\n") < 0) return -1;
+    if (fprintf(fp, "# fib=<number>\n\n") < 0) return -1;
+    return 0;
+}
+
+// Command execution helpers
+static int execute_show_command(const command_t *cmd, char *response, size_t resp_len) {
+    if (strcmp(cmd->target, "interface") == 0) {
+        return show_interfaces_filtered(response, resp_len, cmd->subtype);
+    } else if (strcmp(cmd->target, "route") == 0) {
+        int family_filter = AF_UNSPEC;
+        if (cmd->family == ADDR_FAMILY_INET4) {
+            family_filter = AF_INET;
+        } else if (cmd->family == ADDR_FAMILY_INET6) {
+            family_filter = AF_INET6;
+        }
+        return show_routes(response, resp_len, cmd->fib, cmd->subtype, family_filter);
+    } else if (strcmp(cmd->target, "help") == 0 || strcmp(cmd->target, "?") == 0 || strlen(cmd->target) == 0) {
+        return snprintf(response, resp_len, "%s", get_usage_text());
+    }
+    
+    snprintf(response, resp_len, "Error: Unknown show target '%s'\n", cmd->target);
+    return -1;
+}
+
+static int execute_set_command(const command_t *cmd, char *response, size_t resp_len) {
+    if (strcmp(cmd->target, "interface") == 0) {
+        return configure_interface(&cmd->data.if_config);
+    } else if (strcmp(cmd->target, "route") == 0) {
+        return configure_route(&cmd->data.route_config);
+    }
+    
+    snprintf(response, resp_len, "Error: Unknown set target '%s'\n", cmd->target);
+    return -1;
+}
+
+static int execute_delete_command(const command_t *cmd, char *response, size_t resp_len) {
+    if (strcmp(cmd->target, "route") == 0) {
+        return remove_route(&cmd->data.route_config);
+    }
+    
+    snprintf(response, resp_len, "Error: Unknown delete target '%s'\n", cmd->target);
+    return -1;
+}
+
+// NETCONF message parsing helpers
+static int parse_netconf_get_config(const char *xml_msg, command_t *cmd) {
+    if (strstr(xml_msg, "<get-config>") == NULL) {
+        return -1;
+    }
+    
+    cmd->type = CMD_SHOW;
+    
+    // Extract filter if present
+    const char *filter_start = strstr(xml_msg, "<filter");
+    if (filter_start) {
+        if (strstr(filter_start, "interface")) {
+            strcpy(cmd->target, "interface");
+        } else if (strstr(filter_start, "route")) {
+            strcpy(cmd->target, "route");
+        }
+    }
+    
+    return 0;
+}
+
+static int parse_netconf_edit_config(const char *xml_msg, command_t *cmd) {
+    if (strstr(xml_msg, "<edit-config>") == NULL) {
+        return -1;
+    }
+    
+    cmd->type = CMD_SET;
+    
+    // Parse config to determine target
+    if (strstr(xml_msg, "interface")) {
+        strcpy(cmd->target, "interface");
+    } else if (strstr(xml_msg, "route")) {
+        strcpy(cmd->target, "route");
+    }
+    
+    return 0;
+}
+
+// Public interface functions
+
 int save_configuration(void) {
     // Create backup of existing config
-    if (access(CONFIG_FILE, F_OK) == 0) {
-        if (rename(CONFIG_FILE, CONFIG_BACKUP) != 0) {
-            return -1;
-        }
+    if (create_config_backup() != 0) {
+        return -1;
     }
     
     FILE *fp = fopen(CONFIG_FILE, "w");
     if (!fp) {
-        // Restore backup if we can't create new file
-        if (access(CONFIG_BACKUP, F_OK) == 0) {
-            rename(CONFIG_BACKUP, CONFIG_FILE);
-        }
+        restore_config_backup();
         return -1;
     }
     
     // Set proper permissions
     chmod(CONFIG_FILE, 0644);
     
-    // Write header
-    fprintf(fp, "# Network configuration for netd\n");
-    fprintf(fp, "# Generated automatically - do not edit manually\n\n");
-    
-    // TODO: Write current interface and route configurations
-    // This would require getting current state from the system
-    // For now, just write a placeholder
-    fprintf(fp, "# Interface configurations\n");
-    fprintf(fp, "# [interface.<name>]\n");
-    fprintf(fp, "# inet=<ipv4>/<prefix>\n");
-    fprintf(fp, "# inet6=<ipv6>/<prefix>\n");
-    fprintf(fp, "# fib=<number>\n\n");
-    
-    fprintf(fp, "# Route configurations\n");
-    fprintf(fp, "# [route.static.<index>]\n");
-    fprintf(fp, "# destination=<dest>/<prefix>\n");
-    fprintf(fp, "# gateway=<gateway>\n");
-    fprintf(fp, "# fib=<number>\n\n");
+    // Write configuration
+    if (write_config_header(fp) != 0 ||
+        write_interface_template(fp) != 0 ||
+        write_route_template(fp) != 0) {
+        fclose(fp);
+        restore_config_backup();
+        return -1;
+    }
     
     fclose(fp);
     return 0;
@@ -64,125 +363,15 @@ int load_configuration(void) {
         return -1; // File doesn't exist, not an error
     }
     
-    char line[1024];
-    char section[64] = "";
-
+    config_parser_t parser;
+    config_parser_init(&parser);
     
+    char line[MAX_LINE_LENGTH];
     while (fgets(line, sizeof(line), fp)) {
-        // Skip comments and empty lines
-        if (line[0] == '#' || line[0] == '\n' || line[0] == '\0') {
-            continue;
-        }
-        
         // Remove newline
         line[strcspn(line, "\n")] = 0;
         
-        // Parse section headers [section]
-        if (line[0] == '[' && strchr(line, ']')) {
-            char *end = strchr(line, ']');
-            size_t len = end - line - 1;
-            if (len > 0 && len < sizeof(section) - 1) {
-                strncpy(section, line + 1, len);
-                section[len] = '\0';
-            }
-            continue;
-        }
-        
-        // Parse key=value pairs
-        char *equals = strchr(line, '=');
-        if (!equals) {
-            continue;
-        }
-        
-        *equals = '\0';
-        char *key = line;
-        char *value = equals + 1;
-        
-        // Trim whitespace
-        while (*key == ' ' || *key == '\t') key++;
-        while (*value == ' ' || *value == '\t') value++;
-        
-        char *end = key + strlen(key) - 1;
-        while (end > key && (*end == ' ' || *end == '\t')) *end-- = '\0';
-        
-        end = value + strlen(value) - 1;
-        while (end > value && (*end == ' ' || *end == '\t')) *end-- = '\0';
-        
-        // Parse based on section
-        if (strncmp(section, "interface.", 10) == 0) {
-            char *ifname = section + 10;
-            
-            if (strcmp(key, "inet") == 0) {
-                // Parse IPv4 address
-                char *slash = strchr(value, '/');
-                if (slash) {
-                    *slash = '\0';
-                    int prefix = atoi(slash + 1);
-                    
-                    if_config_t config;
-                    memset(&config, 0, sizeof(config));
-                    strncpy(config.name, ifname, sizeof(config.name) - 1);
-                    config.family = ADDR_FAMILY_INET4;
-                    config.prefix_len = prefix;
-                    
-                    if (inet_pton(AF_INET, value, &config.addr) == 1) {
-                        configure_interface(&config);
-                    }
-                }
-            } else if (strcmp(key, "inet6") == 0) {
-                // Parse IPv6 address
-                char *slash = strchr(value, '/');
-                if (slash) {
-                    *slash = '\0';
-                    int prefix = atoi(slash + 1);
-                    
-                    if_config_t config;
-                    memset(&config, 0, sizeof(config));
-                    strncpy(config.name, ifname, sizeof(config.name) - 1);
-                    config.family = ADDR_FAMILY_INET6;
-                    config.prefix_len = prefix;
-                    
-                    if (inet_pton(AF_INET6, value, &config.addr6) == 1) {
-                        configure_interface(&config);
-                    }
-                }
-            } else if (strcmp(key, "fib") == 0) {
-                // FIB number for interface
-                // TODO: Apply FIB to interface
-            }
-        } else if (strncmp(section, "route.static.", 13) == 0) {
-            if (strcmp(key, "destination") == 0) {
-                // Parse destination
-                char *slash = strchr(value, '/');
-                if (slash) {
-                    *slash = '\0';
-                    int prefix = atoi(slash + 1);
-                    
-                    route_config_t config;
-                    memset(&config, 0, sizeof(config));
-                    config.prefix_len = prefix;
-                    
-                    // Determine family from address format
-                    if (strchr(value, ':')) {
-                        config.family = ADDR_FAMILY_INET6;
-                        if (inet_pton(AF_INET6, value, &config.dest6) == 1) {
-                            // TODO: Get gateway from next line and configure route
-                        }
-                    } else {
-                        config.family = ADDR_FAMILY_INET4;
-                        if (inet_pton(AF_INET, value, &config.dest) == 1) {
-                            // TODO: Get gateway from next line and configure route
-                        }
-                    }
-                }
-            } else if (strcmp(key, "gateway") == 0) {
-                // Gateway for route
-                // TODO: Apply gateway to pending route configuration
-            } else if (strcmp(key, "fib") == 0) {
-                // FIB number for route
-                // TODO: Apply FIB to pending route configuration
-            }
-        }
+        parse_config_line(line, &parser);
     }
     
     fclose(fp);
@@ -192,64 +381,13 @@ int load_configuration(void) {
 int execute_command(command_t *cmd, char *response, size_t resp_len) {
     switch (cmd->type) {
         case CMD_SHOW:
-            if (strcmp(cmd->target, "interface") == 0) {
-                return show_interfaces_filtered(response, resp_len, cmd->subtype);
-            } else if (strcmp(cmd->target, "route") == 0) {
-                int family_filter = AF_UNSPEC;
-                if (cmd->family == ADDR_FAMILY_INET4) {
-                    family_filter = AF_INET;
-                } else if (cmd->family == ADDR_FAMILY_INET6) {
-                    family_filter = AF_INET6;
-                }
-                return show_routes(response, resp_len, cmd->fib, cmd->subtype, family_filter);
-            } else if (strcmp(cmd->target, "help") == 0 || strcmp(cmd->target, "?") == 0 || strlen(cmd->target) == 0) {
-                // Show help/usage
-                snprintf(response, resp_len, 
-                    "Usage:\n"
-                    "  net [command]                    - One-shot mode\n"
-                    "  net                              - Interactive mode\n"
-                    "\nCommands:\n"
-                    "  show interface                   - Show all interfaces (detailed)\n"
-                    "  show interface <type>            - Show interfaces by type (ethernet, bridge, gif, etc.)\n"
-                    "  show route [fib N]               - Show routing table (optionally filter by FIB)\n"
-                    "  set interface ethernet <if> inet addr <addr>/<prefix> [fib N]\n"
-                    "  set interface ethernet <if> inet6 addr <addr>/<prefix> [fib N]\n"
-                    "  set route protocol static [fib N] inet dest gw\n"
-                    "  set route protocol static [fib N] inet6 dest gw\n"
-                    "  delete route protocol static [fib N]\n"
-                    "  commit                           - Apply queued changes\n"
-                    "  save                             - Persist configuration\n"
-                    "  help, ?                          - Show this help\n"
-                    "  quit, exit                       - Exit interactive mode\n"
-                    "\nInterface Types:\n"
-                    "  ethernet, bridge, gif, tun, tap, vlan, lo\n"
-                    "\nTab completion is available for all commands.\n");
-                return 0;
-            } else {
-                snprintf(response, resp_len, "Error: Unknown show target '%s'\n", cmd->target);
-                return -1;
-            }
-            break;
+            return execute_show_command(cmd, response, resp_len);
             
         case CMD_SET:
-            if (strcmp(cmd->target, "interface") == 0) {
-                return configure_interface(&cmd->data.if_config);
-            } else if (strcmp(cmd->target, "route") == 0) {
-                return configure_route(&cmd->data.route_config);
-            } else {
-                snprintf(response, resp_len, "Error: Unknown set target '%s'\n", cmd->target);
-                return -1;
-            }
-            break;
+            return execute_set_command(cmd, response, resp_len);
             
         case CMD_DELETE:
-            if (strcmp(cmd->target, "route") == 0) {
-                return remove_route(&cmd->data.route_config);
-            } else {
-                snprintf(response, resp_len, "Error: Unknown delete target '%s'\n", cmd->target);
-                return -1;
-            }
-            break;
+            return execute_delete_command(cmd, response, resp_len);
             
         case CMD_COMMIT:
             // For now, commit is a no-op since we apply changes immediately
@@ -269,37 +407,21 @@ int execute_command(command_t *cmd, char *response, size_t resp_len) {
             snprintf(response, resp_len, "Error: Unknown command type\n");
             return -1;
     }
-    
-    return -1;
 }
 
 int parse_netconf_message(const char *xml_msg, command_t *cmd) {
     // Parse NETCONF XML message using FreeBSD's XML library
     // This provides better XML parsing than simple string operations
     
-    if (strstr(xml_msg, "<get-config>") != NULL) {
-        cmd->type = CMD_SHOW;
-        // Extract filter if present
-        const char *filter_start = strstr(xml_msg, "<filter");
-        if (filter_start) {
-            // Parse filter to determine target
-            if (strstr(filter_start, "interface")) {
-                strcpy(cmd->target, "interface");
-            } else if (strstr(filter_start, "route")) {
-                strcpy(cmd->target, "route");
-            }
-        }
+    if (parse_netconf_get_config(xml_msg, cmd) == 0) {
         return 0;
-    } else if (strstr(xml_msg, "<edit-config>") != NULL) {
-        cmd->type = CMD_SET;
-        // Parse config to determine target
-        if (strstr(xml_msg, "interface")) {
-            strcpy(cmd->target, "interface");
-        } else if (strstr(xml_msg, "route")) {
-            strcpy(cmd->target, "route");
-        }
+    }
+    
+    if (parse_netconf_edit_config(xml_msg, cmd) == 0) {
         return 0;
-    } else if (strstr(xml_msg, "<commit/>") != NULL) {
+    }
+    
+    if (strstr(xml_msg, "<commit/>") != NULL) {
         cmd->type = CMD_COMMIT;
         return 0;
     }
@@ -321,7 +443,7 @@ int handle_netconf_get_config(const char *filter, char *response, size_t resp_le
     } else if (strstr(filter, "route")) {
         cmd.type = CMD_SHOW;
         strcpy(cmd.target, "route");
-        return show_routes(response, resp_len, -1, NULL, AF_UNSPEC); // -1 means show all FIBs, NULL means no protocol filter, AF_UNSPEC means both families
+        return show_routes(response, resp_len, -1, NULL, AF_UNSPEC);
     }
     
     // Default: show all interfaces

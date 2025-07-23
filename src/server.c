@@ -8,7 +8,6 @@
 
 #define SOCKET_PATH "/var/run/netd.sock"
 #define MAX_CMD_LEN 1024
-#define MAX_RESPONSE_LEN 4096
 
 // Forward declarations
 extern int load_configuration(void);

@@ -1,8 +1,54 @@
 #include "common.h"
 
-// Simple lexer for command parsing
+// Command definition structure
 typedef struct {
-    char *tokens[32];  // Max 32 tokens
+    const char *name;
+    const char *syntax;
+    int min_args;
+    int max_args;
+    cmd_type_t type;
+} cmd_def_t;
+
+// Command definitions
+static const cmd_def_t cmd_definitions[] = {
+    {"show", "show <target> [args...]", 1, 10, CMD_SHOW},
+    {"set", "set <target> <args...>", 2, 20, CMD_SET},
+    {"delete", "delete <target> [args...]", 1, 10, CMD_DELETE},
+    {"commit", "commit", 0, 0, CMD_COMMIT},
+    {"save", "save", 0, 0, CMD_SAVE},
+    {"help", "help", 0, 0, CMD_SHOW},
+    {"?", "?", 0, 0, CMD_SHOW},
+    {NULL, NULL, 0, 0, CMD_UNKNOWN}
+};
+
+// Target-specific command definitions
+typedef struct {
+    const char *target;
+    const char *syntax;
+    int min_args;
+    int max_args;
+    const char *valid_args[10];
+} target_def_t;
+
+static const target_def_t target_definitions[] = {
+    {
+        "interface", 
+        "show interface [type]",
+        0, 1,
+        {"ethernet", "bridge", "gif", "tun", "tap", "vlan", "lo"}
+    },
+    {
+        "route",
+        "show route [fib <n>] [protocol <type>] [inet|inet6]",
+        1, 6,
+        {"fib", "protocol", "inet", "inet6", "static", "dynamic"}
+    },
+    {NULL, NULL, 0, 0, {NULL}}
+};
+
+// Lexer structure
+typedef struct {
+    char *tokens[32];
     int count;
     int pos;
 } lexer_t;
@@ -40,22 +86,197 @@ static int lexer_has_more(lexer_t *lexer) {
     return lexer->pos < lexer->count;
 }
 
-static cmd_type_t parse_cmd_type(const char *token) {
-    if (strcmp(token, "show") == 0) return CMD_SHOW;
-    if (strcmp(token, "set") == 0) return CMD_SET;
-    if (strcmp(token, "delete") == 0) return CMD_DELETE;
-    if (strcmp(token, "commit") == 0) return CMD_COMMIT;
-    if (strcmp(token, "save") == 0) return CMD_SAVE;
-    if (strcmp(token, "help") == 0 || strcmp(token, "?") == 0) return CMD_SHOW;
-    return CMD_UNKNOWN;
+static int lexer_remaining(lexer_t *lexer) {
+    return lexer->count - lexer->pos;
 }
 
-static addr_family_t parse_family(const char *token) {
-    if (strcmp(token, "inet") == 0) return ADDR_FAMILY_INET4;
-    if (strcmp(token, "inet6") == 0) return ADDR_FAMILY_INET6;
-    return ADDR_FAMILY_INET4;
+// Find command definition
+static const cmd_def_t* find_cmd_def(const char *name) {
+    for (int i = 0; cmd_definitions[i].name != NULL; i++) {
+        if (strcmp(cmd_definitions[i].name, name) == 0) {
+            return &cmd_definitions[i];
+        }
+    }
+    return NULL;
 }
 
+// Find target definition
+static const target_def_t* find_target_def(const char *target) {
+    for (int i = 0; target_definitions[i].target != NULL; i++) {
+        if (strcmp(target_definitions[i].target, target) == 0) {
+            return &target_definitions[i];
+        }
+    }
+    return NULL;
+}
+
+// Validate argument against valid args list
+static int is_valid_arg(const char *arg, const char *const valid_args[]) {
+    for (int i = 0; valid_args[i] != NULL; i++) {
+        if (strcmp(valid_args[i], arg) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Forward declarations
+static int parse_address(const char *addr_str, addr_family_t family, 
+                        struct in_addr *addr, struct in6_addr *addr6);
+static int parse_cidr(const char *cidr_str, int *prefix_len);
+
+// Parse route arguments
+static int parse_route_args(lexer_t *lexer, command_t *cmd) {
+    const char *token;
+    
+    while (lexer_has_more(lexer)) {
+        token = lexer_peek(lexer);
+        
+        if (strcmp(token, "fib") == 0) {
+            lexer_next(lexer);
+            if (!lexer_has_more(lexer)) {
+                return -1; // Error: fib requires a number
+            }
+            token = lexer_next(lexer);
+            cmd->fib = atoi(token);
+            if (cmd->fib < 0) {
+                return -1; // Error: invalid FIB number
+            }
+        } else if (strcmp(token, "protocol") == 0) {
+            lexer_next(lexer);
+            if (!lexer_has_more(lexer)) {
+                return -1; // Error: protocol requires a type
+            }
+            token = lexer_next(lexer);
+            if (strcmp(token, "static") != 0 && strcmp(token, "dynamic") != 0) {
+                return -1; // Error: invalid protocol type
+            }
+            strncpy(cmd->subtype, token, sizeof(cmd->subtype) - 1);
+        } else if (strcmp(token, "inet") == 0) {
+            lexer_next(lexer);
+            cmd->family = ADDR_FAMILY_INET4;
+        } else if (strcmp(token, "inet6") == 0) {
+            lexer_next(lexer);
+            cmd->family = ADDR_FAMILY_INET6;
+        } else {
+            return -1; // Error: unknown argument
+        }
+    }
+    
+    return 0;
+}
+
+// Parse interface arguments
+static int parse_interface_args(lexer_t *lexer, command_t *cmd) {
+    if (lexer_has_more(lexer)) {
+        const char *token = lexer_next(lexer);
+        const target_def_t *target_def = find_target_def("interface");
+        if (target_def && !is_valid_arg(token, target_def->valid_args)) {
+            return -1; // Error: invalid interface type
+        }
+        strncpy(cmd->subtype, token, sizeof(cmd->subtype) - 1);
+    }
+    return 0;
+}
+
+// Parse set command arguments
+static int parse_set_args(lexer_t *lexer, command_t *cmd) {
+    const char *token;
+    
+    // Parse target-specific arguments
+    if (strcmp(cmd->target, "interface") == 0) {
+        // set interface <type> <name> <family> addr <addr>/<prefix> [fib <n>]
+        if (!lexer_has_more(lexer)) return -1;
+        token = lexer_next(lexer); // interface type
+        strncpy(cmd->subtype, token, sizeof(cmd->subtype) - 1);
+        
+        if (!lexer_has_more(lexer)) return -1;
+        token = lexer_next(lexer); // interface name
+        strncpy(cmd->name, token, sizeof(cmd->name) - 1);
+        
+        if (!lexer_has_more(lexer)) return -1;
+        token = lexer_next(lexer); // family
+        cmd->family = (strcmp(token, "inet6") == 0) ? ADDR_FAMILY_INET6 : ADDR_FAMILY_INET4;
+        
+        if (!lexer_has_more(lexer)) return -1;
+        token = lexer_next(lexer); // addr or address
+        if (strcmp(token, "addr") != 0 && strcmp(token, "address") != 0) return -1;
+        
+        if (!lexer_has_more(lexer)) return -1;
+        token = lexer_next(lexer); // address
+        
+        // Parse address and prefix
+        char addr_str[INET6_ADDRSTRLEN];
+        strncpy(addr_str, token, sizeof(addr_str) - 1);
+        
+        if (parse_cidr(addr_str, &cmd->data.if_config.prefix_len) < 0) return -1;
+        
+        // Extract just the IP address part (before the /)
+        char *slash = strchr(addr_str, '/');
+        if (slash) {
+            *slash = '\0';
+        }
+        
+        if (parse_address(addr_str, cmd->family, &cmd->data.if_config.addr, &cmd->data.if_config.addr6) <= 0) {
+            return -1;
+        }
+        
+        strncpy(cmd->data.if_config.name, cmd->name, sizeof(cmd->data.if_config.name) - 1);
+        cmd->data.if_config.family = cmd->family;
+        
+        // Parse optional FIB
+        while (lexer_has_more(lexer)) {
+            token = lexer_peek(lexer);
+            if (strcmp(token, "fib") == 0) {
+                lexer_next(lexer);
+                if (!lexer_has_more(lexer)) return -1;
+                token = lexer_next(lexer);
+                cmd->fib = atoi(token);
+                cmd->data.if_config.fib = cmd->fib;
+            } else {
+                break;
+            }
+        }
+        
+    } else if (strcmp(cmd->target, "route") == 0) {
+        // set route protocol static [fib <n>] <family> <dest> <gw>
+        if (!lexer_has_more(lexer) || strcmp(lexer_next(lexer), "protocol") != 0) return -1;
+        if (!lexer_has_more(lexer) || strcmp(lexer_next(lexer), "static") != 0) return -1;
+        
+        // Parse optional FIB
+        while (lexer_has_more(lexer)) {
+            token = lexer_peek(lexer);
+            if (strcmp(token, "fib") == 0) {
+                lexer_next(lexer);
+                if (!lexer_has_more(lexer)) return -1;
+                token = lexer_next(lexer);
+                cmd->fib = atoi(token);
+            } else {
+                break;
+            }
+        }
+        
+        if (!lexer_has_more(lexer)) return -1;
+        token = lexer_next(lexer);
+        cmd->family = (strcmp(token, "inet6") == 0) ? ADDR_FAMILY_INET6 : ADDR_FAMILY_INET4;
+        
+        if (!lexer_has_more(lexer)) return -1;
+        token = lexer_next(lexer);
+        if (parse_address(token, cmd->family, &cmd->data.route_config.dest, &cmd->data.route_config.dest6) <= 0) {
+            return -1;
+        }
+        
+        if (!lexer_has_more(lexer)) return -1;
+        token = lexer_next(lexer);
+        if (parse_address(token, cmd->family, &cmd->data.route_config.gw, &cmd->data.route_config.gw6) <= 0) {
+            return -1;
+        }
+    }
+    
+    return 0;
+}
+
+// Helper functions (keep existing implementations)
 static int parse_address(const char *addr_str, addr_family_t family, 
                         struct in_addr *addr, struct in6_addr *addr6) {
     if (family == ADDR_FAMILY_INET4) {
@@ -72,7 +293,6 @@ static int parse_cidr(const char *cidr_str, int *prefix_len) {
         return 0;
     }
     
-    *slash = '\0';
     *prefix_len = atoi(slash + 1);
     return 0;
 }
@@ -90,246 +310,77 @@ int parse_command(const char *cmd_line, command_t *cmd) {
     
     // Parse command type
     const char *token = lexer_next(&lexer);
-    cmd->type = parse_cmd_type(token);
-    if (cmd->type == CMD_UNKNOWN) {
+    const cmd_def_t *cmd_def = find_cmd_def(token);
+    if (!cmd_def) {
         lexer_cleanup(&lexer);
         return -1;
     }
     
-    // Handle simple commands
-    if (cmd->type == CMD_COMMIT || cmd->type == CMD_SAVE) {
+    cmd->type = cmd_def->type;
+    
+    // Handle commands with no arguments
+    if (cmd_def->min_args == 0) {
+        if (lexer_remaining(&lexer) != 0) {
+            lexer_cleanup(&lexer);
+            return -1; // Too many arguments
+        }
         lexer_cleanup(&lexer);
         return 0;
     }
     
-    // Parse target
+    // Parse target for commands that need it
     if (!lexer_has_more(&lexer)) {
-        if (cmd->type == CMD_SHOW) {
-            lexer_cleanup(&lexer);
-            return 0;
-        }
         lexer_cleanup(&lexer);
-        return -1;
+        return -1; // Missing target
     }
     
     token = lexer_next(&lexer);
     strncpy(cmd->target, token, sizeof(cmd->target) - 1);
     
-        // Handle show commands
-    if (cmd->type == CMD_SHOW) {
-        if (strcmp(cmd->target, "interface") == 0 && lexer_has_more(&lexer)) {
-            token = lexer_next(&lexer);
-            strncpy(cmd->subtype, token, sizeof(cmd->subtype) - 1);
-        }
+    // Validate target
+    const target_def_t *target_def = find_target_def(cmd->target);
+    if (!target_def) {
         lexer_cleanup(&lexer);
-        return 0;
+        return -1; // Unknown target
     }
     
-    // Handle route commands
-    if (strcmp(cmd->target, "route") == 0) {
-        if (!lexer_has_more(&lexer)) {
-            lexer_cleanup(&lexer);
-            return -1;
-        }
-        
-        // Handle show commands for routes
-        if (cmd->type == CMD_SHOW) {
-            // Parse: show route [fib N] [protocol static|dynamic] [inet|inet6]
-            while (lexer_has_more(&lexer)) {
-                token = lexer_peek(&lexer);
-                
-                if (strcmp(token, "fib") == 0) {
-                    lexer_next(&lexer);
-                    if (lexer_has_more(&lexer)) {
-                        token = lexer_next(&lexer);
-                    cmd->fib = atoi(token);
-                    printf("DEBUG: Parsed FIB number: %d\n", cmd->fib);
-                }
-                } else if (strcmp(token, "protocol") == 0) {
-                    lexer_next(&lexer);
-                    if (lexer_has_more(&lexer)) {
-                        token = lexer_next(&lexer);
-                        strncpy(cmd->subtype, token, sizeof(cmd->subtype) - 1);
-                        printf("DEBUG: Parsed protocol: %s\n", cmd->subtype);
-                    }
-                } else if (strcmp(token, "inet") == 0) {
-                    lexer_next(&lexer);
-                    cmd->family = ADDR_FAMILY_INET4;
-                    printf("DEBUG: Parsed family: inet\n");
-                } else if (strcmp(token, "inet6") == 0) {
-                    lexer_next(&lexer);
-                    cmd->family = ADDR_FAMILY_INET6;
-                    printf("DEBUG: Parsed family: inet6\n");
-                } else {
-                    lexer_next(&lexer);
-                }
-            }
-            lexer_cleanup(&lexer);
-            return 0;
-        }
-        
-        // Handle set commands for routes
-        if (cmd->type == CMD_SET) {
-            // Parse optional FIB
-            while (lexer_has_more(&lexer)) {
-                token = lexer_peek(&lexer);
-                if (strcmp(token, "fib") == 0) {
-                    lexer_next(&lexer);
-                    if (lexer_has_more(&lexer)) {
-                        token = lexer_next(&lexer);
-                    cmd->fib = atoi(token);
-                    }
-                } else {
-                    break;
-                }
-            }
-            
-            if (!lexer_has_more(&lexer)) {
-                lexer_cleanup(&lexer);
-                return -1;
-            }
-            
-            token = lexer_next(&lexer);
-            cmd->family = parse_family(token);
-            
-            // Parse destination
-            if (!lexer_has_more(&lexer)) {
-                lexer_cleanup(&lexer);
-                return -1;
-            }
-            
-            token = lexer_next(&lexer);
-            char dest_str[INET6_ADDRSTRLEN];
-            strncpy(dest_str, token, sizeof(dest_str) - 1);
-            
-            if (parse_cidr(dest_str, &cmd->data.route_config.prefix_len) < 0) {
-                lexer_cleanup(&lexer);
-                return -1;
-            }
-            
-            if (parse_address(dest_str, cmd->family,
-                            &cmd->data.route_config.dest,
-                            &cmd->data.route_config.dest6) <= 0) {
-                lexer_cleanup(&lexer);
-                return -1;
-            }
-            
-            // Parse gateway
-            if (!lexer_has_more(&lexer)) {
-                lexer_cleanup(&lexer);
-                return -1;
-            }
-            
-            token = lexer_next(&lexer);
-            if (parse_address(token, cmd->family,
-                            &cmd->data.route_config.gw,
-                            &cmd->data.route_config.gw6) <= 0) {
-                lexer_cleanup(&lexer);
-                return -1;
-            }
-        }
-    }
-    
-    // Handle interface commands
+    // Parse target-specific arguments
+    int result = -1;
+    if (cmd->type == CMD_SHOW) {
     if (strcmp(cmd->target, "interface") == 0) {
-        if (!lexer_has_more(&lexer)) {
-            lexer_cleanup(&lexer);
-            return -1;
+            result = parse_interface_args(&lexer, cmd);
+    } else if (strcmp(cmd->target, "route") == 0) {
+            result = parse_route_args(&lexer, cmd);
         }
-        
-        token = lexer_next(&lexer);
-        strncpy(cmd->subtype, token, sizeof(cmd->subtype) - 1);
-        
-        if (cmd->type == CMD_SET) {
-            // Parse interface name
-            if (!lexer_has_more(&lexer)) {
-                lexer_cleanup(&lexer);
-                return -1;
-            }
-            
-            token = lexer_next(&lexer);
-            strncpy(cmd->name, token, sizeof(cmd->name) - 1);
-            
-            // Parse family
-            if (!lexer_has_more(&lexer)) {
-                lexer_cleanup(&lexer);
-                return -1;
-            }
-            
-            token = lexer_next(&lexer);
-            cmd->family = parse_family(token);
-            
-            // Parse optional FIB
-            while (lexer_has_more(&lexer)) {
-                token = lexer_peek(&lexer);
-                if (strcmp(token, "fib") == 0) {
-                    lexer_next(&lexer);
-                    if (lexer_has_more(&lexer)) {
-                        token = lexer_next(&lexer);
-                        cmd->fib = atoi(token);
-                    }
-                } else {
-                    break;
-                }
-            }
-            
-            // Parse "addr"
-            if (!lexer_has_more(&lexer) || strcmp(lexer_peek(&lexer), "addr") != 0) {
-                lexer_cleanup(&lexer);
-                return -1;
-            }
-            lexer_next(&lexer);
-            
-            // Parse address
-            if (!lexer_has_more(&lexer)) {
-                lexer_cleanup(&lexer);
-                return -1;
-            }
-            
-            token = lexer_next(&lexer);
-            char addr_str[INET6_ADDRSTRLEN];
-            strncpy(addr_str, token, sizeof(addr_str) - 1);
-            
-            if (parse_cidr(addr_str, &cmd->data.if_config.prefix_len) < 0) {
-                lexer_cleanup(&lexer);
-                return -1;
-            }
-            
-            if (parse_address(addr_str, cmd->family,
-                            &cmd->data.if_config.addr,
-                            &cmd->data.if_config.addr6) <= 0) {
-                lexer_cleanup(&lexer);
-                return -1;
-            }
-            
-            strncpy(cmd->data.if_config.name, cmd->name, sizeof(cmd->data.if_config.name) - 1);
-            cmd->data.if_config.family = cmd->family;
-            cmd->data.if_config.fib = cmd->fib;
-        }
+    } else if (cmd->type == CMD_SET) {
+        result = parse_set_args(&lexer, cmd);
     }
     
     lexer_cleanup(&lexer);
-    return 0;
+    return result;
+}
+
+const char* get_usage_text(void) {
+    return "Usage:\n"
+           "  net [command]                    - One-shot mode\n"
+           "  net                              - Interactive mode\n"
+           "\nCommands:\n"
+           "  show interface [type]            - Show interfaces (optionally filtered by type)\n"
+           "  show route [fib N] [protocol static|dynamic] [inet|inet6] - Show routing table\n"
+           "  set interface <name> inet addr|address <addr>/<prefix> [fib N]\n"
+           "  set interface <name> inet6 addr|address <addr>/<prefix> [fib N]\n"
+           "  set route protocol static [fib N] inet <dest> <gw>\n"
+           "  set route protocol static [fib N] inet6 <dest> <gw>\n"
+           "  delete route protocol static [fib N]\n"
+           "  commit                           - Apply queued changes\n"
+           "  save                             - Persist configuration\n"
+           "  help, ?                          - Show this help\n"
+           "  quit, exit                       - Exit interactive mode\n"
+           "\nInterface Types:\n"
+           "  ethernet, bridge, gif, tun, tap, vlan, lo\n"
+           "\nTab completion is available for all commands.\n";
 }
 
 void print_usage(void) {
-    printf("Usage:\n");
-    printf("  net [command]                    - One-shot mode\n");
-    printf("  net                              - Interactive mode\n");
-    printf("\nCommands:\n");
-    printf("  show interface                   - Show all interfaces (detailed)\n");
-    printf("  show interface <type>            - Show interfaces by type (ethernet, bridge, gif, etc.)\n");
-    printf("  show route [fib N]               - Show routing table (optionally filter by FIB)\n");
-    printf("  set interface ethernet <if> inet addr <addr>/<prefix> [fib N]\n");
-    printf("  set interface ethernet <if> inet6 addr <addr>/<prefix> [fib N]\n");
-    printf("  set route protocol static [fib N] inet dest gw\n");
-    printf("  set route protocol static [fib N] inet6 dest gw\n");
-    printf("  delete route protocol static [fib N]\n");
-    printf("  commit                           - Apply queued changes\n");
-    printf("  save                             - Persist configuration\n");
-    printf("  help, ?                          - Show this help\n");
-    printf("  quit, exit                       - Exit interactive mode\n");
-    printf("\nInterface Types:\n");
-    printf("  ethernet, bridge, gif, tun, tap, vlan, lo\n");
-    printf("\nTab completion is available for all commands.\n");
+    printf("%s", get_usage_text());
 } 

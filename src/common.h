@@ -79,6 +79,7 @@ typedef struct {
 // Function prototypes
 int parse_command(const char *cmd_line, command_t *cmd);
 int execute_command(command_t *cmd, char *response, size_t resp_len);
+const char* get_usage_text(void);
 void print_usage(void);
 int show_interfaces_filtered(char *response, size_t resp_len, const char *filter);
 
