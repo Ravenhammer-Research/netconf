@@ -8,8 +8,6 @@ A FreeBSD application that provides ifconfig and route functionality using a NET
 - Interactive and one-shot command modes
 - Interface configuration
 - Route management
-- Tabular output for show commands
-- Support for tap/tun interface creation
 - Configuration persistence
 - YANG model integration
 
@@ -18,12 +16,10 @@ A FreeBSD application that provides ifconfig and route functionality using a NET
 - FreeBSD system
 - libnetconf2 development libraries
 - libyang development libraries
-- OpenSSL development libraries
-- libssh development libraries
 
 Install dependencies:
 ```bash
-pkg install libnetconf2 libyang openssl libssh
+pkg install libnetconf2 libyang
 ```
 
 ## Building
@@ -101,11 +97,8 @@ set interface <type> <name> inet6 address <addr>/<prefix>
 ### Route Commands
 
 ```
-show route                                        # Show routing table
-show route fib <n>                                # Show routes for specific FIB
 set route protocol static inet <dest> <gw>
 set route protocol static inet6 <dest> <gw>
-delete route static                               # Delete all static routes
 ```
 
 ### System Commands
@@ -156,77 +149,8 @@ net show interface
 # Show tap interfaces only
 net show interface tap
 
-
-```
-
-## Recent Improvements
-
-### Interface Configuration
-- Fixed interface address setting using system calls to ifconfig
-- Added support for tap/tun interface creation
-- Improved address parsing with CIDR notation
-- Added netmask display in interface listings
-
-### Command Parsing
-- Rewrote command parser with lexer-based approach
-- Added structured command and target definitions
-- Improved error handling and validation
-- Fixed parsing of interface type and name
-
-### Display Improvements
-- Added IPv4 address netmask display (e.g., `192.168.0.0/31`)
-- Improved tabular output formatting
-- Added FIB value detection and display
-- Enhanced interface information gathering
-
-### Configuration Management
-- Implemented configuration saving and loading
-- Added YANG model integration
-- Improved NETCONF protocol support
-- Enhanced error handling and debugging
-
-## Architecture
-
-The application uses a client-server architecture:
-
-- **Client (`net`)**: Parses commands and communicates with the server
-- **Server (`netd`)**: Runs with root privileges and performs actual system operations
-
-Communication is via UNIX domain sockets for security and performance.
-
-## Implementation Details
-
-- Uses system calls to ifconfig for interface configuration
-- Uses routing sockets for route management
-- Supports both IPv4 and IPv6 addressing
-- Provides tabular output for show commands
-- Includes YANG model validation
-- Supports configuration persistence
-
-## Debugging
-
-The server includes extensive debug output that can be enabled by running:
-
-```bash
-sudo netd
-```
-
-Debug output shows:
-- Command parsing steps
-- Interface configuration operations
-- Address parsing and validation
-- System call results and error codes
-
-## Future Enhancements
-
-- Full NETCONF protocol support using libnetconf2
-- Configuration validation with YANG models
-- Transaction support with rollback
-- Support for additional interface types (bridge, VLAN)
-- Firewall rule management
-- Network namespace support
-- Performance optimizations
-
 ## License
 
-This project is provided as-is for educational and development purposes. 
+Copyright (c) 2025 Paige Thompson / Raven Hammer Research (paige@paige.bio)
+
+This project is licensed under the BSD 3-Clause License. See the [LICENSE](LICENSE) file for details.

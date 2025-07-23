@@ -1,3 +1,33 @@
+/*
+ * Copyright (c) 2025 Paige Thompson / Raven Hammer Research (paige@paige.bio)
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * 3. Neither the name of the copyright holder nor the names of its
+ *    contributors may be used to endorse or promote products derived from
+ *    this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include "common.h"
 #include <bsdxml.h>
 #include <sys/stat.h>
@@ -410,26 +440,34 @@ int execute_command(command_t *cmd, char *response, size_t resp_len) {
 }
 
 int parse_netconf_message(const char *xml_msg, command_t *cmd) {
+    printf("DEBUG: NETCONF message received:\n%s\n", xml_msg);
+    
     // Parse NETCONF XML message using FreeBSD's XML library
     // This provides better XML parsing than simple string operations
     
     if (parse_netconf_get_config(xml_msg, cmd) == 0) {
+        printf("DEBUG: Parsed as get-config request\n");
         return 0;
     }
     
     if (parse_netconf_edit_config(xml_msg, cmd) == 0) {
+        printf("DEBUG: Parsed as edit-config request\n");
         return 0;
     }
     
     if (strstr(xml_msg, "<commit/>") != NULL) {
+        printf("DEBUG: Parsed as commit request\n");
         cmd->type = CMD_COMMIT;
         return 0;
     }
     
+    printf("DEBUG: Failed to parse NETCONF message\n");
     return -1;
 }
 
 int handle_netconf_get_config(const char *filter, char *response, size_t resp_len) {
+    printf("DEBUG: NETCONF get-config request with filter:\n%s\n", filter);
+    
     // Handle NETCONF get-config request
     // Convert to appropriate show command
     
@@ -437,20 +475,31 @@ int handle_netconf_get_config(const char *filter, char *response, size_t resp_le
     memset(&cmd, 0, sizeof(cmd));
     
     if (strstr(filter, "interface")) {
+        printf("DEBUG: Processing interface get-config\n");
         cmd.type = CMD_SHOW;
         strcpy(cmd.target, "interface");
-        return show_interfaces_filtered(response, resp_len, "");
+        int result = show_interfaces_filtered(response, resp_len, "");
+        printf("DEBUG: get-config response:\n%s\n", response);
+        return result;
     } else if (strstr(filter, "route")) {
+        printf("DEBUG: Processing route get-config\n");
         cmd.type = CMD_SHOW;
         strcpy(cmd.target, "route");
-        return show_routes(response, resp_len, -1, NULL, AF_UNSPEC);
+        int result = show_routes(response, resp_len, -1, NULL, AF_UNSPEC);
+        printf("DEBUG: get-config response:\n%s\n", response);
+        return result;
     }
     
     // Default: show all interfaces
-    return show_interfaces_filtered(response, resp_len, "");
+    printf("DEBUG: Processing default get-config (interfaces)\n");
+    int result = show_interfaces_filtered(response, resp_len, "");
+    printf("DEBUG: get-config response:\n%s\n", response);
+    return result;
 }
 
 int handle_netconf_edit_config(const char *config, char *response, size_t resp_len) {
+    printf("DEBUG: NETCONF edit-config request with config:\n%s\n", config);
+    
     // Handle NETCONF edit-config request
     // Convert to appropriate set command
     
@@ -458,26 +507,34 @@ int handle_netconf_edit_config(const char *config, char *response, size_t resp_l
     memset(&cmd, 0, sizeof(cmd));
     
     if (strstr(config, "interface")) {
+        printf("DEBUG: Processing interface edit-config\n");
         cmd.type = CMD_SET;
         strcpy(cmd.target, "interface");
         // Parse interface configuration from XML
         // This would need more sophisticated XML parsing
         snprintf(response, resp_len, "Interface configuration applied via NETCONF\n");
+        printf("DEBUG: edit-config response:\n%s\n", response);
         return 0;
     } else if (strstr(config, "route")) {
+        printf("DEBUG: Processing route edit-config\n");
         cmd.type = CMD_SET;
         strcpy(cmd.target, "route");
         // Parse route configuration from XML
         snprintf(response, resp_len, "Route configuration applied via NETCONF\n");
+        printf("DEBUG: edit-config response:\n%s\n", response);
         return 0;
     }
     
+    printf("DEBUG: Unknown configuration type in edit-config\n");
     snprintf(response, resp_len, "Unknown configuration type\n");
     return -1;
 }
 
 int handle_netconf_commit(char *response, size_t resp_len) {
+    printf("DEBUG: NETCONF commit request received\n");
+    
     // Handle NETCONF commit request
     snprintf(response, resp_len, "Configuration committed successfully via NETCONF\n");
+    printf("DEBUG: commit response:\n%s\n", response);
     return 0;
 } 
