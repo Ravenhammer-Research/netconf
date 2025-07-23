@@ -144,8 +144,7 @@ net set route protocol static inet 10.0.0.0/24 192.168.0.254
 # Add IPv6 route
 net set route protocol static inet6 2001:db8::/64 2001:db8::1
 
-# Show routes for specific FIB
-net show route fib 1
+
 ```
 
 ### Show Information
@@ -157,11 +156,7 @@ net show interface
 # Show tap interfaces only
 net show interface tap
 
-# Show routing table
-net show route
 
-# Show routes for FIB 1
-net show route fib 1
 ```
 
 ## Recent Improvements
