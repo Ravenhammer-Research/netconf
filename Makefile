@@ -1,6 +1,6 @@
 CC=		cc
 CFLAGS=		-Wall -Wextra -std=c99 -D_BSD_SOURCE -I/usr/local/include
-LDFLAGS=	-L/usr/local/lib -lnetconf2 -lyang -lssh -lcrypto -lssl -lutil -lreadline -lbsdxml
+LDFLAGS=	-L/usr/local/lib -lnetconf2 -lyang -lssh -lcrypto -lssl -lutil -lreadline -lexpat
 # Build targets
 all: net netd test_commands
 

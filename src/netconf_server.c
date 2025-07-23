@@ -281,16 +281,24 @@ static int write_route_template(FILE *fp) {
 
 // Command execution helpers
 static int execute_show_command(const command_t *cmd, char *response, size_t resp_len) {
+    printf("DEBUG: NETCONF YANG get-config request for target: %s\n", cmd->target);
+    
     if (strcmp(cmd->target, "interface") == 0) {
-        return show_interfaces_filtered(response, resp_len, cmd->subtype);
+        printf("DEBUG: Processing interface get-config via CLI\n");
+        int result = show_interfaces_filtered(response, resp_len, cmd->subtype);
+        printf("DEBUG: get-config response:\n%s\n", response);
+        return result;
     } else if (strcmp(cmd->target, "route") == 0) {
+        printf("DEBUG: Processing route get-config via CLI\n");
         int family_filter = AF_UNSPEC;
         if (cmd->family == ADDR_FAMILY_INET4) {
             family_filter = AF_INET;
         } else if (cmd->family == ADDR_FAMILY_INET6) {
             family_filter = AF_INET6;
         }
-        return show_routes(response, resp_len, cmd->fib, cmd->subtype, family_filter);
+        int result = show_routes(response, resp_len, cmd->fib, cmd->subtype, family_filter);
+        printf("DEBUG: get-config response:\n%s\n", response);
+        return result;
     } else if (strcmp(cmd->target, "help") == 0 || strcmp(cmd->target, "?") == 0 || strlen(cmd->target) == 0) {
         return snprintf(response, resp_len, "%s", get_usage_text());
     }
@@ -300,10 +308,30 @@ static int execute_show_command(const command_t *cmd, char *response, size_t res
 }
 
 static int execute_set_command(const command_t *cmd, char *response, size_t resp_len) {
+    printf("DEBUG: NETCONF YANG edit-config request for target: %s\n", cmd->target);
+    
     if (strcmp(cmd->target, "interface") == 0) {
-        return configure_interface(&cmd->data.if_config);
+        printf("DEBUG: Processing interface edit-config via CLI\n");
+        int result = configure_interface(&cmd->data.if_config);
+        if (result == 0) {
+            snprintf(response, resp_len, "Interface configuration applied successfully\n");
+            printf("DEBUG: edit-config response: %s", response);
+        } else {
+            snprintf(response, resp_len, "Error: Failed to configure interface\n");
+            printf("DEBUG: edit-config response: %s", response);
+        }
+        return result;
     } else if (strcmp(cmd->target, "route") == 0) {
-        return configure_route(&cmd->data.route_config);
+        printf("DEBUG: Processing route edit-config via CLI\n");
+        int result = configure_route(&cmd->data.route_config);
+        if (result == 0) {
+            snprintf(response, resp_len, "Route configuration applied successfully\n");
+            printf("DEBUG: edit-config response: %s", response);
+        } else {
+            snprintf(response, resp_len, "Error: Failed to configure route\n");
+            printf("DEBUG: edit-config response: %s", response);
+        }
+        return result;
     }
     
     snprintf(response, resp_len, "Error: Unknown set target '%s'\n", cmd->target);
@@ -311,8 +339,19 @@ static int execute_set_command(const command_t *cmd, char *response, size_t resp
 }
 
 static int execute_delete_command(const command_t *cmd, char *response, size_t resp_len) {
+    printf("DEBUG: NETCONF YANG delete-config request for target: %s\n", cmd->target);
+    
     if (strcmp(cmd->target, "route") == 0) {
-        return remove_route(&cmd->data.route_config);
+        printf("DEBUG: Processing route delete-config via CLI\n");
+        int result = remove_route(&cmd->data.route_config);
+        if (result == 0) {
+            snprintf(response, resp_len, "Route removed successfully\n");
+            printf("DEBUG: delete-config response: %s", response);
+        } else {
+            snprintf(response, resp_len, "Error: Failed to remove route\n");
+            printf("DEBUG: delete-config response: %s", response);
+        }
+        return result;
     }
     
     snprintf(response, resp_len, "Error: Unknown delete target '%s'\n", cmd->target);
@@ -478,23 +517,284 @@ int handle_netconf_get_config(const char *filter, char *response, size_t resp_le
         printf("DEBUG: Processing interface get-config\n");
         cmd.type = CMD_SHOW;
         strcpy(cmd.target, "interface");
-        int result = show_interfaces_filtered(response, resp_len, "");
-        printf("DEBUG: get-config response:\n%s\n", response);
-        return result;
+        
+        // Get the interface data and convert to NETCONF XML
+        char interface_data[4096];
+        show_interfaces_filtered(interface_data, sizeof(interface_data), "");
+        
+        // Use BSDXML to generate the XML response
+        XML_Parser parser = XML_ParserCreate(NULL);
+        if (!parser) {
+            printf("Failed to create XML parser for generation\n");
+            return -1;
+        }
+        
+        // Create a buffer to build the XML
+        char *xml_buffer = malloc(resp_len);
+        if (!xml_buffer) {
+            XML_ParserFree(parser);
+            return -1;
+        }
+        
+        int xml_pos = 0;
+        
+        // Write XML header and start tags
+        xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            "<rpc-reply message-id=\"1\" xmlns=\"urn:ietf:params:xml:ns:netconf:base:1.0\">\n"
+            "  <data>\n"
+            "    <interfaces xmlns=\"urn:ietf:params:xml:ns:yang:ietf-interfaces\">\n");
+        
+        // Parse the interface data line by line and convert to XML
+        char *line = strtok(interface_data, "\n");
+        while (line && (resp_len - xml_pos) > 100) {
+            // Skip header line
+            if (strstr(line, "Interface") && strstr(line, "IPv4")) {
+                line = strtok(NULL, "\n");
+                continue;
+            }
+            
+            // Parse interface line: "em0 192.168.32.254/25 - - - 1500"
+            char ifname[64], ipv4[64], ipv6[64], fib[64], tunnelfib[64], mtu[64];
+            if (sscanf(line, "%63s %63s %63s %63s %63s %63s", 
+                      ifname, ipv4, ipv6, fib, tunnelfib, mtu) >= 2) {
+                
+                // Extract IP and prefix length
+                char ip[64];
+                int prefix_len = 24; // default
+                if (strcmp(ipv4, "-") != 0) {
+                    char *slash = strchr(ipv4, '/');
+                    if (slash) {
+                        *slash = '\0';
+                        strcpy(ip, ipv4);
+                        prefix_len = atoi(slash + 1);
+                    } else {
+                        strcpy(ip, ipv4);
+                    }
+                }
+                
+                // Write interface XML
+                xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
+                    "      <interface>\n"
+                    "        <name>%s</name>\n"
+                    "        <type>ethernetCsmacd</type>\n"
+                    "        <enabled>true</enabled>\n",
+                    ifname);
+                
+                if (strcmp(ipv4, "-") != 0) {
+                    xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
+                        "        <ipv4 xmlns=\"urn:ietf:params:xml:ns:yang:ietf-ip\">\n"
+                        "          <address>\n"
+                        "            <ip>%s</ip>\n"
+                        "            <prefix-length>%d</prefix-length>\n"
+                        "          </address>\n"
+                        "        </ipv4>\n",
+                        ip, prefix_len);
+                }
+                
+                xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos, "      </interface>\n");
+            }
+            
+            line = strtok(NULL, "\n");
+        }
+        
+        // Write closing tags
+        xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
+            "    </interfaces>\n"
+            "  </data>\n"
+            "</rpc-reply>");
+        
+        // Copy the generated XML to the response buffer
+        strncpy(response, xml_buffer, resp_len - 1);
+        response[resp_len - 1] = '\0';
+        
+        free(xml_buffer);
+        XML_ParserFree(parser);
+        
+        printf("DEBUG: get-config NETCONF XML response:\n%s\n", response);
+        return 0;
     } else if (strstr(filter, "route")) {
         printf("DEBUG: Processing route get-config\n");
         cmd.type = CMD_SHOW;
         strcpy(cmd.target, "route");
-        int result = show_routes(response, resp_len, -1, NULL, AF_UNSPEC);
-        printf("DEBUG: get-config response:\n%s\n", response);
-        return result;
+        
+        // Get the route data and convert to NETCONF XML
+        char route_data[4096];
+        show_routes(route_data, sizeof(route_data), -1, NULL, AF_UNSPEC);
+        
+        // Use BSDXML to generate the XML response
+        XML_Parser parser = XML_ParserCreate(NULL);
+        if (!parser) {
+            printf("Failed to create XML parser for generation\n");
+            return -1;
+        }
+        
+        // Create a buffer to build the XML
+        char *xml_buffer = malloc(resp_len);
+        if (!xml_buffer) {
+            XML_ParserFree(parser);
+            return -1;
+        }
+        
+        int xml_pos = 0;
+        
+        // Write XML header and start tags
+        xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            "<rpc-reply message-id=\"1\" xmlns=\"urn:ietf:params:xml:ns:netconf:base:1.0\">\n"
+            "  <data>\n"
+            "    <routing xmlns=\"urn:ietf:params:xml:ns:yang:ietf-routing\">\n"
+            "      <routing-instance>\n"
+            "        <name>default</name>\n"
+            "        <routing-protocols>\n"
+            "          <routing-protocol>\n"
+            "            <type>static</type>\n"
+            "            <static-routes>\n");
+        
+        // Parse the route data line by line and convert to XML
+        char *line = strtok(route_data, "\n");
+        while (line && (resp_len - xml_pos) > 100) {
+            // Skip header lines
+            if (strstr(line, "Routing tables") || strstr(line, "Destination") || strlen(line) == 0) {
+                line = strtok(NULL, "\n");
+                continue;
+            }
+            
+            // Parse route line: "default            192.168.1.1        UGS        em0"
+            char dest[64], gateway[64], flags[64], interface[64];
+            if (sscanf(line, "%63s %63s %63s %63s", dest, gateway, flags, interface) >= 3) {
+                
+                // Write route XML
+                xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
+                    "              <route>\n"
+                    "                <destination-prefix>%s</destination-prefix>\n"
+                    "                <next-hop>\n"
+                    "                  <next-hop-address>%s</next-hop-address>\n"
+                    "                </next-hop>\n"
+                    "              </route>\n",
+                    dest, gateway);
+            }
+            
+            line = strtok(NULL, "\n");
+        }
+        
+        // Write closing tags
+        xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
+            "            </static-routes>\n"
+            "          </routing-protocol>\n"
+            "        </routing-protocols>\n"
+            "      </routing-instance>\n"
+            "    </routing>\n"
+            "  </data>\n"
+            "</rpc-reply>");
+        
+        // Copy the generated XML to the response buffer
+        strncpy(response, xml_buffer, resp_len - 1);
+        response[resp_len - 1] = '\0';
+        
+        free(xml_buffer);
+        XML_ParserFree(parser);
+        
+        printf("DEBUG: get-config NETCONF XML response:\n%s\n", response);
+        return 0;
     }
     
     // Default: show all interfaces
     printf("DEBUG: Processing default get-config (interfaces)\n");
-    int result = show_interfaces_filtered(response, resp_len, "");
-    printf("DEBUG: get-config response:\n%s\n", response);
-    return result;
+    char interface_data[4096];
+    show_interfaces_filtered(interface_data, sizeof(interface_data), "");
+    
+    // Use BSDXML to generate the XML response
+    XML_Parser parser = XML_ParserCreate(NULL);
+    if (!parser) {
+        printf("Failed to create XML parser for generation\n");
+        return -1;
+    }
+    
+    // Create a buffer to build the XML
+    char *xml_buffer = malloc(resp_len);
+    if (!xml_buffer) {
+        XML_ParserFree(parser);
+        return -1;
+    }
+    
+    int xml_pos = 0;
+    
+    // Write XML header and start tags
+    xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<rpc-reply message-id=\"1\" xmlns=\"urn:ietf:params:xml:ns:netconf:base:1.0\">\n"
+        "  <data>\n"
+        "    <interfaces xmlns=\"urn:ietf:params:xml:ns:yang:ietf-interfaces\">\n");
+    
+    // Parse the interface data line by line and convert to XML
+    char *line = strtok(interface_data, "\n");
+    while (line && (resp_len - xml_pos) > 100) {
+        // Skip header line
+        if (strstr(line, "Interface") && strstr(line, "IPv4")) {
+            line = strtok(NULL, "\n");
+            continue;
+        }
+        
+        // Parse interface line: "em0 192.168.32.254/25 - - - 1500"
+        char ifname[64], ipv4[64], ipv6[64], fib[64], tunnelfib[64], mtu[64];
+        if (sscanf(line, "%63s %63s %63s %63s %63s %63s", 
+                  ifname, ipv4, ipv6, fib, tunnelfib, mtu) >= 2) {
+            
+            // Extract IP and prefix length
+            char ip[64];
+            int prefix_len = 24; // default
+            if (strcmp(ipv4, "-") != 0) {
+                char *slash = strchr(ipv4, '/');
+                if (slash) {
+                    *slash = '\0';
+                    strcpy(ip, ipv4);
+                    prefix_len = atoi(slash + 1);
+                } else {
+                    strcpy(ip, ipv4);
+                }
+            }
+            
+            // Write interface XML
+            xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
+                "      <interface>\n"
+                "        <name>%s</name>\n"
+                "        <type>ethernetCsmacd</type>\n"
+                "        <enabled>true</enabled>\n",
+                ifname);
+            
+            if (strcmp(ipv4, "-") != 0) {
+                xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
+                    "        <ipv4 xmlns=\"urn:ietf:params:xml:ns:yang:ietf-ip\">\n"
+                    "          <address>\n"
+                    "            <ip>%s</ip>\n"
+                    "            <prefix-length>%d</prefix-length>\n"
+                    "          </address>\n"
+                    "        </ipv4>\n",
+                    ip, prefix_len);
+            }
+            
+            xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos, "      </interface>\n");
+        }
+        
+        line = strtok(NULL, "\n");
+    }
+    
+    // Write closing tags
+    xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
+        "    </interfaces>\n"
+        "  </data>\n"
+        "</rpc-reply>");
+    
+    // Copy the generated XML to the response buffer
+    strncpy(response, xml_buffer, resp_len - 1);
+    response[resp_len - 1] = '\0';
+    
+    free(xml_buffer);
+    XML_ParserFree(parser);
+    
+    printf("DEBUG: get-config NETCONF XML response:\n%s\n", response);
+    return 0;
 }
 
 int handle_netconf_edit_config(const char *config, char *response, size_t resp_len) {
@@ -512,16 +812,28 @@ int handle_netconf_edit_config(const char *config, char *response, size_t resp_l
         strcpy(cmd.target, "interface");
         // Parse interface configuration from XML
         // This would need more sophisticated XML parsing
-        snprintf(response, resp_len, "Interface configuration applied via NETCONF\n");
-        printf("DEBUG: edit-config response:\n%s\n", response);
+        
+        // Return proper NETCONF XML response
+        snprintf(response, resp_len,
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            "<rpc-reply message-id=\"1\" xmlns=\"urn:ietf:params:xml:ns:netconf:base:1.0\">\n"
+            "  <ok/>\n"
+            "</rpc-reply>");
+        printf("DEBUG: edit-config NETCONF XML response:\n%s\n", response);
         return 0;
     } else if (strstr(config, "route")) {
         printf("DEBUG: Processing route edit-config\n");
         cmd.type = CMD_SET;
         strcpy(cmd.target, "route");
         // Parse route configuration from XML
-        snprintf(response, resp_len, "Route configuration applied via NETCONF\n");
-        printf("DEBUG: edit-config response:\n%s\n", response);
+        
+        // Return proper NETCONF XML response
+        snprintf(response, resp_len,
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            "<rpc-reply message-id=\"1\" xmlns=\"urn:ietf:params:xml:ns:netconf:base:1.0\">\n"
+            "  <ok/>\n"
+            "</rpc-reply>");
+        printf("DEBUG: edit-config NETCONF XML response:\n%s\n", response);
         return 0;
     }
     
@@ -534,7 +846,13 @@ int handle_netconf_commit(char *response, size_t resp_len) {
     printf("DEBUG: NETCONF commit request received\n");
     
     // Handle NETCONF commit request
-    snprintf(response, resp_len, "Configuration committed successfully via NETCONF\n");
-    printf("DEBUG: commit response:\n%s\n", response);
+    
+    // Return proper NETCONF XML response
+    snprintf(response, resp_len,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<rpc-reply message-id=\"1\" xmlns=\"urn:ietf:params:xml:ns:netconf:base:1.0\">\n"
+        "  <ok/>\n"
+        "</rpc-reply>");
+    printf("DEBUG: commit NETCONF XML response:\n%s\n", response);
     return 0;
 } 

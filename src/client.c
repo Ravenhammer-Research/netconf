@@ -31,6 +31,25 @@
 #include "common.h"
 #include <readline/readline.h>
 #include <readline/history.h>
+#include <bsdxml.h>
+ 
+// Structure to hold parsing state
+typedef struct {
+    char current_element[64];
+    char ifname[64];
+    char ipv4[64];
+    char prefix[8];
+    char dest[64];
+    char next[64];
+    int in_interface;
+    int in_route;
+    int in_name;
+    int in_ip;
+    int in_prefix;
+    int in_dest;
+    int in_next;
+    int header_printed;
+} parse_state_t;
 
 static int connect_to_server(void) {
     int sock = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -94,6 +113,139 @@ static int receive_response(int sock, char *response, size_t max_len) {
     return 0;
 }
 
+// XML parsing handlers
+static void XMLCALL start_element_handler(void *userData, const XML_Char *name, const XML_Char **atts __attribute__((unused))) {
+    parse_state_t *state = (parse_state_t *)userData;
+    strncpy(state->current_element, name, sizeof(state->current_element) - 1);
+    state->current_element[sizeof(state->current_element) - 1] = '\0';
+    
+    // Handle namespaced elements by checking the local name part
+    const char *local_name = strrchr(name, ':');
+    if (local_name) {
+        local_name++; // Skip the colon
+    } else {
+        local_name = name;
+    }
+    
+    if (strcmp(local_name, "interface") == 0) {
+        state->in_interface = 1;
+        memset(state->ifname, 0, sizeof(state->ifname));
+        memset(state->ipv4, 0, sizeof(state->ipv4));
+        memset(state->prefix, 0, sizeof(state->prefix));
+    } else if (strcmp(local_name, "route") == 0) {
+        state->in_route = 1;
+        memset(state->dest, 0, sizeof(state->dest));
+        memset(state->next, 0, sizeof(state->next));
+    } else if (strcmp(local_name, "name") == 0) {
+        state->in_name = 1;
+    } else if (strcmp(local_name, "ip") == 0) {
+        state->in_ip = 1;
+    } else if (strcmp(local_name, "prefix-length") == 0) {
+        state->in_prefix = 1;
+    } else if (strcmp(local_name, "destination-prefix") == 0) {
+        state->in_dest = 1;
+    } else if (strcmp(local_name, "next-hop-address") == 0) {
+        state->in_next = 1;
+    }
+}
+
+static void XMLCALL end_element_handler(void *userData, const XML_Char *name) {
+    parse_state_t *state = (parse_state_t *)userData;
+    
+    // Handle namespaced elements by checking the local name part
+    const char *local_name = strrchr(name, ':');
+    if (local_name) {
+        local_name++; // Skip the colon
+    } else {
+        local_name = name;
+    }
+    
+    if (strcmp(local_name, "interface") == 0) {
+        // Display the interface
+        if (strlen(state->ifname) > 0) {
+            char ipv4_display[64];
+            if (strlen(state->ipv4) > 0 && strlen(state->prefix) > 0) {
+                snprintf(ipv4_display, sizeof(ipv4_display), "%s/%s", state->ipv4, state->prefix);
+            } else {
+                strcpy(ipv4_display, "-");
+            }
+            
+            printf("%-12s %-18s %-18s %-9s %-10s %-8s\n", 
+                   state->ifname, ipv4_display, "-", "-", "-", "1500");
+        }
+        state->in_interface = 0;
+    } else if (strcmp(local_name, "route") == 0) {
+        // Display the route
+        if (strlen(state->dest) > 0 && strlen(state->next) > 0) {
+            printf("%-18s %-18s %-9s %-6s %s\n", state->dest, state->next, "UGS", "em0", "");
+        }
+        state->in_route = 0;
+    } else if (strcmp(local_name, "name") == 0) {
+        state->in_name = 0;
+    } else if (strcmp(local_name, "ip") == 0) {
+        state->in_ip = 0;
+    } else if (strcmp(local_name, "prefix-length") == 0) {
+        state->in_prefix = 0;
+    } else if (strcmp(local_name, "destination-prefix") == 0) {
+        state->in_dest = 0;
+    } else if (strcmp(local_name, "next-hop-address") == 0) {
+        state->in_next = 0;
+    }
+}
+
+static void XMLCALL character_data_handler(void *userData, const XML_Char *s, int len) {
+    parse_state_t *state = (parse_state_t *)userData;
+    
+    if (state->in_name && state->in_interface) {
+        strncat(state->ifname, s, len);
+    } else if (state->in_ip && state->in_interface) {
+        strncat(state->ipv4, s, len);
+    } else if (state->in_prefix && state->in_interface) {
+        strncat(state->prefix, s, len);
+    } else if (state->in_dest && state->in_route) {
+        strncat(state->dest, s, len);
+    } else if (state->in_next && state->in_route) {
+        strncat(state->next, s, len);
+    }
+}
+
+static void parse_and_display_response(const char *response) {
+    // Always try to parse as XML using BSDXML
+    XML_Parser parser = XML_ParserCreate(NULL);
+    if (!parser) {
+        printf("Failed to create XML parser\n");
+        printf("%s\n", response);
+        return;
+    }
+    
+    parse_state_t state = {0};
+    XML_SetUserData(parser, &state);
+    XML_SetElementHandler(parser, start_element_handler, end_element_handler);
+    XML_SetCharacterDataHandler(parser, character_data_handler);
+    
+    // Check response type and print header if needed
+    if (strstr(response, "interfaces") || strstr(response, "ietf-interfaces")) {
+        printf("Interface    IPv4 Address       IPv6 Address       FIB      TunnelFIB MTU\n");
+    } else if (strstr(response, "routing") || strstr(response, "ietf-routing")) {
+        printf("Routing tables\n\n");
+        printf("Destination        Gateway            Flags     Netif Expire\n");
+    }
+    
+    // Try to parse the response as XML
+    if (XML_Parse(parser, response, strlen(response), 1) == XML_STATUS_OK) {
+        // XML parsed successfully
+        if (strstr(response, "<ok/>")) {
+            printf("OK\n");
+        }
+    } else {
+        // Not valid XML - this is an error
+        printf("Error: Server sent invalid NETCONF XML response\n");
+        printf("Raw response: %s\n", response);
+    }
+    
+    XML_ParserFree(parser);
+}
+
 // Tab completion function
 char* command_generator(const char* text, int state) {
     static int list_index, len;
@@ -152,7 +304,7 @@ static void interactive_mode(void) {
         if (send_command(sock, line) == 0) {
             char response[MAX_RESPONSE_LEN];
             if (receive_response(sock, response, sizeof(response)) == 0) {
-                printf("%s\n", response);
+                parse_and_display_response(response);
             }
         }
         
@@ -177,7 +329,7 @@ static void one_shot_mode(int argc, char *argv[]) {
     if (send_command(sock, cmd) == 0) {
         char response[MAX_RESPONSE_LEN];
         if (receive_response(sock, response, sizeof(response)) == 0) {
-            printf("%s\n", response);
+            parse_and_display_response(response);
         }
     }
     

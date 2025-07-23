@@ -43,6 +43,11 @@
 extern int load_configuration(void);
 extern int init_yang_context(void);
 extern void cleanup_yang_context(void);
+extern int parse_netconf_message(const char *xml_msg, command_t *cmd);
+extern int handle_netconf_get_config(const char *filter, char *response, size_t resp_len);
+extern int handle_netconf_edit_config(const char *config, char *response, size_t resp_len);
+extern int handle_netconf_commit(char *response, size_t resp_len);
+extern int show_routes(char *response, size_t resp_len, int fib_filter, const char *protocol_filter, int family_filter);
 
 static int server_socket = -1;
 
@@ -143,30 +148,193 @@ int main(void) {
                 cmd_buf[cmd_len] = '\0';
                 printf("DEBUG: Received command: '%s'\n", cmd_buf);
                 
-                // Parse and execute command
-                command_t cmd;
-                if (parse_command(cmd_buf, &cmd) == 0) {
-                    printf("DEBUG: Parsed command type: %d\n", cmd.type);
-                    char response[MAX_RESPONSE_LEN];
-                    if (execute_command(&cmd, response, sizeof(response)) == 0) {
-                        printf("DEBUG: Command executed successfully, response length: %zu\n", strlen(response));
-                        // Send response with length prefix
-                        size_t resp_len = strlen(response);
-                        send(client_socket, &resp_len, sizeof(resp_len), 0);
-                        send(client_socket, response, resp_len, 0);
+                char response[MAX_RESPONSE_LEN];
+                
+                // Check if this is a NETCONF XML message
+                if (strstr(cmd_buf, "<?xml") != NULL || strstr(cmd_buf, "<rpc") != NULL) {
+                    printf("DEBUG: Detected NETCONF XML message\n");
+                    
+                    // Parse NETCONF message
+                    command_t cmd;
+                    if (parse_netconf_message(cmd_buf, &cmd) == 0) {
+                        printf("DEBUG: NETCONF message parsed successfully\n");
+                        
+                        // Handle based on command type
+                        if (cmd.type == CMD_SHOW) {
+                            // Handle get-config
+                            if (strstr(cmd_buf, "get-config") != NULL) {
+                                const char *filter = strstr(cmd_buf, "<filter");
+                                handle_netconf_get_config(filter ? filter : "", response, sizeof(response));
+                            } else {
+                                // Handle get
+                                if (strstr(cmd_buf, "interface")) {
+                                    show_interfaces_filtered(response, sizeof(response), "");
+                                } else if (strstr(cmd_buf, "route")) {
+                                    show_routes(response, sizeof(response), -1, NULL, AF_UNSPEC);
+                                }
+                            }
+                        } else if (cmd.type == CMD_SET) {
+                            // Handle edit-config
+                            const char *config = strstr(cmd_buf, "<config>");
+                            handle_netconf_edit_config(config ? config : "", response, sizeof(response));
+                        } else if (cmd.type == CMD_COMMIT) {
+                            // Handle commit
+                            handle_netconf_commit(response, sizeof(response));
+                        }
+                        
+                        printf("DEBUG: NETCONF response generated, length: %zu\n", strlen(response));
+                    } else {
+                        printf("DEBUG: Failed to parse NETCONF message\n");
+                        snprintf(response, sizeof(response), "Error: Invalid NETCONF message\n");
+                    }
                 } else {
-                        printf("DEBUG: Command execution failed\n");
-                        size_t resp_len = strlen(response);
-                        send(client_socket, &resp_len, sizeof(resp_len), 0);
-                        send(client_socket, response, resp_len, 0);
+                    // Convert CLI command to NETCONF XML and process it
+                    printf("DEBUG: Converting CLI command to NETCONF XML\n");
+                    
+                    // Parse CLI command first
+                    command_t cmd;
+                    if (parse_command(cmd_buf, &cmd) == 0) {
+                        printf("DEBUG: CLI command parsed, type: %d, target: %s\n", cmd.type, cmd.target);
+                        
+                        // Convert to NETCONF XML based on command type
+                        char netconf_xml[2048];
+                        if (cmd.type == CMD_SHOW) {
+                            // Convert show command to get-config
+                            if (strcmp(cmd.target, "interface") == 0) {
+                                snprintf(netconf_xml, sizeof(netconf_xml),
+                                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                                    "<rpc message-id=\"1\" xmlns=\"urn:ietf:params:xml:ns:netconf:base:1.0\">\n"
+                                    "  <get-config>\n"
+                                    "    <source>\n"
+                                    "      <running/>\n"
+                                    "    </source>\n"
+                                    "    <filter type=\"subtree\">\n"
+                                    "      <interfaces xmlns=\"urn:ietf:params:xml:ns:yang:ietf-interfaces\"/>\n"
+                                    "    </filter>\n"
+                                    "  </get-config>\n"
+                                    "</rpc>");
+                            } else if (strcmp(cmd.target, "route") == 0) {
+                                snprintf(netconf_xml, sizeof(netconf_xml),
+                                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                                    "<rpc message-id=\"1\" xmlns=\"urn:ietf:params:xml:ns:netconf:base:1.0\">\n"
+                                    "  <get-config>\n"
+                                    "    <source>\n"
+                                    "      <running/>\n"
+                                    "    </source>\n"
+                                    "    <filter type=\"subtree\">\n"
+                                    "      <routing xmlns=\"urn:ietf:params:xml:ns:yang:ietf-routing\"/>\n"
+                                    "    </filter>\n"
+                                    "  </get-config>\n"
+                                    "</rpc>");
+                            }
+                        } else if (cmd.type == CMD_SET) {
+                            // Convert set command to edit-config
+                            if (strcmp(cmd.target, "interface") == 0) {
+                                snprintf(netconf_xml, sizeof(netconf_xml),
+                                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                                    "<rpc message-id=\"1\" xmlns=\"urn:ietf:params:xml:ns:netconf:base:1.0\">\n"
+                                    "  <edit-config>\n"
+                                    "    <target>\n"
+                                    "      <running/>\n"
+                                    "    </target>\n"
+                                    "    <config>\n"
+                                    "      <interfaces xmlns=\"urn:ietf:params:xml:ns:yang:ietf-interfaces\">\n"
+                                    "        <interface>\n"
+                                    "          <name>%s</name>\n"
+                                    "          <ipv4 xmlns=\"urn:ietf:params:xml:ns:yang:ietf-ip\">\n"
+                                    "            <address>\n"
+                                    "              <ip>%s</ip>\n"
+                                    "              <prefix-length>%d</prefix-length>\n"
+                                    "            </address>\n"
+                                    "          </ipv4>\n"
+                                    "        </interface>\n"
+                                    "      </interfaces>\n"
+                                    "    </config>\n"
+                                    "  </edit-config>\n"
+                                    "</rpc>",
+                                    cmd.data.if_config.name,
+                                    "192.168.1.1", // TODO: Convert from binary addr
+                                    cmd.data.if_config.prefix_len);
+                            } else if (strcmp(cmd.target, "route") == 0) {
+                                snprintf(netconf_xml, sizeof(netconf_xml),
+                                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                                    "<rpc message-id=\"1\" xmlns=\"urn:ietf:params:xml:ns:netconf:base:1.0\">\n"
+                                    "  <edit-config>\n"
+                                    "    <target>\n"
+                                    "      <running/>\n"
+                                    "    </target>\n"
+                                    "    <config>\n"
+                                    "      <routing xmlns=\"urn:ietf:params:xml:ns:yang:ietf-routing\">\n"
+                                    "        <routing-instance>\n"
+                                    "          <name>default</name>\n"
+                                    "          <routing-protocols>\n"
+                                    "            <routing-protocol>\n"
+                                    "              <type>static</type>\n"
+                                    "              <static-routes>\n"
+                                    "                <route>\n"
+                                    "                  <destination-prefix>%s</destination-prefix>\n"
+                                    "                  <next-hop>\n"
+                                    "                    <next-hop-address>%s</next-hop-address>\n"
+                                    "                  </next-hop>\n"
+                                    "                </route>\n"
+                                    "              </static-routes>\n"
+                                    "            </routing-protocol>\n"
+                                    "          </routing-protocols>\n"
+                                    "        </routing-instance>\n"
+                                    "      </routing>\n"
+                                    "    </config>\n"
+                                    "  </edit-config>\n"
+                                    "</rpc>",
+                                    "0.0.0.0/0", // TODO: Convert from binary dest
+                                    "192.168.1.1"); // TODO: Convert from binary gw
+                            }
+                        }
+                        
+                        printf("DEBUG: Generated NETCONF XML:\n%s\n", netconf_xml);
+                        
+                        // Parse the generated NETCONF XML
+                        command_t netconf_cmd;
+                        if (parse_netconf_message(netconf_xml, &netconf_cmd) == 0) {
+                            printf("DEBUG: NETCONF message parsed successfully\n");
+                            
+                            // Handle based on command type
+                            if (netconf_cmd.type == CMD_SHOW) {
+                                // Handle get-config
+                                if (strstr(netconf_xml, "get-config") != NULL) {
+                                    const char *filter = strstr(netconf_xml, "<filter");
+                                    handle_netconf_get_config(filter ? filter : "", response, sizeof(response));
+                                } else {
+                                    // Handle get - convert to get-config for proper NETCONF XML response
+                                    if (strstr(netconf_xml, "interface")) {
+                                        handle_netconf_get_config("<filter type=\"subtree\"><interfaces xmlns=\"urn:ietf:params:xml:ns:yang:ietf-interfaces\"/></filter>", response, sizeof(response));
+                                    } else if (strstr(netconf_xml, "route")) {
+                                        handle_netconf_get_config("<filter type=\"subtree\"><routing xmlns=\"urn:ietf:params:xml:ns:yang:ietf-routing\"/></filter>", response, sizeof(response));
+                                    }
+                                }
+                            } else if (netconf_cmd.type == CMD_SET) {
+                                // Handle edit-config
+                                const char *config = strstr(netconf_xml, "<config>");
+                                handle_netconf_edit_config(config ? config : "", response, sizeof(response));
+                            } else if (netconf_cmd.type == CMD_COMMIT) {
+                                // Handle commit
+                                handle_netconf_commit(response, sizeof(response));
+                            }
+                            
+                            printf("DEBUG: NETCONF response generated, length: %zu\n", strlen(response));
+                        } else {
+                            printf("DEBUG: Failed to parse generated NETCONF message\n");
+                            snprintf(response, sizeof(response), "Error: Failed to process command\n");
+                        }
+                    } else {
+                        printf("DEBUG: CLI command parsing failed\n");
+                        snprintf(response, sizeof(response), "Error: Invalid command\n");
+                    }
                 }
-                } else {
-                    printf("DEBUG: Command parsing failed\n");
-                    const char *error = "Error: Invalid command\n";
-                    size_t resp_len = strlen(error);
-                    send(client_socket, &resp_len, sizeof(resp_len), 0);
-                    send(client_socket, error, resp_len, 0);
-        }
+                
+                // Send response with length prefix
+                size_t resp_len = strlen(response);
+                send(client_socket, &resp_len, sizeof(resp_len), 0);
+                send(client_socket, response, resp_len, 0);
             }
         }
         
