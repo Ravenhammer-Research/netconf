@@ -28,6 +28,23 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+/**
+ * @file common.h
+ * @brief Common definitions and declarations for netd
+ * 
+ * This header file contains shared definitions, data structures, constants,
+ * and function prototypes used throughout the netd project. It includes:
+ * 
+ * - System includes for networking, sockets, and system calls
+ * - Constants for socket paths and buffer sizes
+ * - Enumerations for command types and address families
+ * - Data structures for interface and route configurations
+ * - Function prototypes for all major subsystems
+ * 
+ * This file should be included by all source files in the netd project
+ * to ensure consistent type definitions and API declarations.
+ */
+
 #ifndef COMMON_H
 #define COMMON_H
 
@@ -61,6 +78,7 @@ typedef enum {
     CMD_SET,
     CMD_DELETE,
     CMD_COMMIT,
+    CMD_DISCARD,
     CMD_SAVE,
     CMD_UNKNOWN
 } cmd_type_t;

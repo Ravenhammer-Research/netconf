@@ -28,6 +28,22 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+/**
+ * @file server.c
+ * @brief Main netd server implementation
+ * 
+ * This file implements the core netd server functionality including:
+ * - Unix domain socket server setup and management
+ * - Client connection handling and message processing
+ * - NETCONF protocol message detection and routing
+ * - Integration between CLI commands and NETCONF operations
+ * - Signal handling for graceful shutdown
+ * - Configuration loading and YANG context initialization
+ * 
+ * The server accepts both plain text CLI commands and NETCONF XML messages
+ * from clients, routing them to the appropriate subsystems for processing.
+ */
+
 #include "common.h"
 #include <sys/un.h>
 #include <sys/socket.h>
@@ -51,6 +67,9 @@ extern int show_routes(char *response, size_t resp_len, int fib_filter, const ch
 
 static int server_socket = -1;
 
+/**
+ * Cleanup function to close socket and remove socket file
+ */
 static void cleanup(void) {
     if (server_socket >= 0) {
         close(server_socket);
@@ -59,12 +78,20 @@ static void cleanup(void) {
     cleanup_yang_context();
 }
 
+/**
+ * Signal handler for graceful shutdown
+ * @param sig Signal number received
+ */
 static void signal_handler(int sig) {
     printf("Received signal %d, shutting down...\n", sig);
     cleanup();
     exit(0);
 }
 
+/**
+ * Main server entry point
+ * @return Exit status
+ */
 int main(void) {
     struct sockaddr_un addr;
     struct sigaction sa;
@@ -214,22 +241,80 @@ int main(void) {
                                     "  </get-config>\n"
                                     "</rpc>");
                             } else if (strcmp(cmd.target, "route") == 0) {
-                                snprintf(netconf_xml, sizeof(netconf_xml),
-                                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-                                    "<rpc message-id=\"1\" xmlns=\"urn:ietf:params:xml:ns:netconf:base:1.0\">\n"
-                                    "  <get-config>\n"
-                                    "    <source>\n"
-                                    "      <running/>\n"
-                                    "    </source>\n"
-                                    "    <filter type=\"subtree\">\n"
-                                    "      <routing xmlns=\"urn:ietf:params:xml:ns:yang:ietf-routing\"/>\n"
-                                    "    </filter>\n"
-                                    "  </get-config>\n"
-                                    "</rpc>");
+                                // Include protocol filter and FIB filter in the XML if specified
+                                const char *protocol_filter = (strlen(cmd.subtype) > 0) ? cmd.subtype : NULL;
+                                int fib_filter = cmd.fib;
+                                
+                                if (protocol_filter && fib_filter >= 0) {
+                                    snprintf(netconf_xml, sizeof(netconf_xml),
+                                        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                                        "<rpc message-id=\"1\" xmlns=\"urn:ietf:params:xml:ns:netconf:base:1.0\">\n"
+                                        "  <get-config>\n"
+                                        "    <source>\n"
+                                        "      <running/>\n"
+                                        "    </source>\n"
+                                        "    <filter type=\"subtree\">\n"
+                                        "      <routing xmlns=\"urn:ietf:params:xml:ns:yang:ietf-routing\">\n"
+                                        "        <routing-instance>\n"
+                                        "          <name>default</name>\n"
+                                        "          <routing-protocols>\n"
+                                        "            <routing-protocol>\n"
+                                        "              <type>%s</type>\n"
+                                        "              <fib>%d</fib>\n"
+                                        "            </routing-protocol>\n"
+                                        "          </routing-protocols>\n"
+                                        "        </routing-instance>\n"
+                                        "      </routing>\n"
+                                        "    </filter>\n"
+                                        "  </get-config>\n"
+                                        "</rpc>", protocol_filter, fib_filter);
+                                } else if (protocol_filter) {
+                                    snprintf(netconf_xml, sizeof(netconf_xml),
+                                        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                                        "<rpc message-id=\"1\" xmlns=\"urn:ietf:params:xml:ns:netconf:base:1.0\">\n"
+                                        "  <get-config>\n"
+                                        "    <source>\n"
+                                        "      <running/>\n"
+                                        "    </source>\n"
+                                        "    <filter type=\"subtree\">\n"
+                                        "      <routing xmlns=\"urn:ietf:params:xml:ns:yang:ietf-routing\">\n"
+                                        "        <routing-instance>\n"
+                                        "          <routing-protocols>\n"
+                                        "            <routing-protocol>\n"
+                                        "              <type>%s</type>\n"
+                                        "            </routing-protocol>\n"
+                                        "          </routing-protocols>\n"
+                                        "        </routing-instance>\n"
+                                        "      </routing>\n"
+                                        "    </filter>\n"
+                                        "  </get-config>\n"
+                                        "</rpc>", protocol_filter);
+                                } else {
+                                    snprintf(netconf_xml, sizeof(netconf_xml),
+                                        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                                        "<rpc message-id=\"1\" xmlns=\"urn:ietf:params:xml:ns:netconf:base:1.0\">\n"
+                                        "  <get-config>\n"
+                                        "    <source>\n"
+                                        "      <running/>\n"
+                                        "    </source>\n"
+                                        "    <filter type=\"subtree\">\n"
+                                        "      <routing xmlns=\"urn:ietf:params:xml:ns:yang:ietf-routing\"/>\n"
+                                        "    </filter>\n"
+                                        "  </get-config>\n"
+                                        "</rpc>");
+                                }
                             }
                         } else if (cmd.type == CMD_SET) {
                             // Convert set command to edit-config
                             if (strcmp(cmd.target, "interface") == 0) {
+                                // Convert binary address to string
+                                char addr_str[INET6_ADDRSTRLEN];
+                                if (cmd.data.if_config.family == ADDR_FAMILY_INET6) {
+                                    inet_ntop(AF_INET6, &cmd.data.if_config.addr6, addr_str, sizeof(addr_str));
+                                } else {
+                                    inet_ntop(AF_INET, &cmd.data.if_config.addr, addr_str, sizeof(addr_str));
+                                }
+                                
                                 snprintf(netconf_xml, sizeof(netconf_xml),
                                     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
                                     "<rpc message-id=\"1\" xmlns=\"urn:ietf:params:xml:ns:netconf:base:1.0\">\n"
@@ -253,9 +338,21 @@ int main(void) {
                                     "  </edit-config>\n"
                                     "</rpc>",
                                     cmd.data.if_config.name,
-                                    "192.168.1.1", // TODO: Convert from binary addr
+                                    addr_str,
                                     cmd.data.if_config.prefix_len);
                             } else if (strcmp(cmd.target, "route") == 0) {
+                                // Convert binary addresses to strings
+                                char dest_str[INET6_ADDRSTRLEN];
+                                char gw_str[INET6_ADDRSTRLEN];
+                                
+                                if (cmd.data.route_config.family == ADDR_FAMILY_INET6) {
+                                    inet_ntop(AF_INET6, &cmd.data.route_config.dest6, dest_str, sizeof(dest_str));
+                                    inet_ntop(AF_INET6, &cmd.data.route_config.gw6, gw_str, sizeof(gw_str));
+                                } else {
+                                    inet_ntop(AF_INET, &cmd.data.route_config.dest, dest_str, sizeof(dest_str));
+                                    inet_ntop(AF_INET, &cmd.data.route_config.gw, gw_str, sizeof(gw_str));
+                                }
+                                
                                 snprintf(netconf_xml, sizeof(netconf_xml),
                                     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
                                     "<rpc message-id=\"1\" xmlns=\"urn:ietf:params:xml:ns:netconf:base:1.0\">\n"
@@ -285,8 +382,8 @@ int main(void) {
                                     "    </config>\n"
                                     "  </edit-config>\n"
                                     "</rpc>",
-                                    "0.0.0.0/0", // TODO: Convert from binary dest
-                                    "192.168.1.1"); // TODO: Convert from binary gw
+                                    dest_str,
+                                    gw_str);
                             }
                         }
                         
@@ -299,17 +396,15 @@ int main(void) {
                             
                             // Handle based on command type
                             if (netconf_cmd.type == CMD_SHOW) {
-                                // Handle get-config
+                                // Handle get-config - always use the generated XML filter
                                 if (strstr(netconf_xml, "get-config") != NULL) {
                                     const char *filter = strstr(netconf_xml, "<filter");
+                                    printf("DEBUG: Using generated XML filter for get-config\n");
                                     handle_netconf_get_config(filter ? filter : "", response, sizeof(response));
                                 } else {
-                                    // Handle get - convert to get-config for proper NETCONF XML response
-                                    if (strstr(netconf_xml, "interface")) {
-                                        handle_netconf_get_config("<filter type=\"subtree\"><interfaces xmlns=\"urn:ietf:params:xml:ns:yang:ietf-interfaces\"/></filter>", response, sizeof(response));
-                                    } else if (strstr(netconf_xml, "route")) {
-                                        handle_netconf_get_config("<filter type=\"subtree\"><routing xmlns=\"urn:ietf:params:xml:ns:yang:ietf-routing\"/></filter>", response, sizeof(response));
-                                    }
+                                    // This should not happen since we always generate get-config XML
+                                    printf("DEBUG: Unexpected: get-config not found in generated XML\n");
+                                    snprintf(response, sizeof(response), "Error: Internal error - get-config not found\n");
                                 }
                             } else if (netconf_cmd.type == CMD_SET) {
                                 // Handle edit-config

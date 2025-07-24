@@ -3,13 +3,6 @@ module netd-interfaces {
   namespace "urn:netd:interfaces";
   prefix netd-if;
 
-  import ietf-interfaces {
-    prefix if;
-  }
-  import ietf-ip {
-    prefix ip;
-  }
-
   organization "NetD Project";
   contact "netd@example.com";
   description "Network interface configuration for NetD";
@@ -18,8 +11,29 @@ module netd-interfaces {
     description "Initial version";
   }
 
-  augment "/if:interfaces/if:interface" {
-    description "Add FIB support to interfaces";
+  container interfaces {
+    description "Interface configuration container";
+    
+    list interface {
+      key "name";
+      description "The list of configured interfaces on the device";
+      
+      leaf name {
+        type string;
+        description "The name of the interface";
+      }
+      
+      leaf type {
+        type string;
+        description "The type of the interface";
+        default "ethernetCsmacd";
+      }
+      
+      leaf enabled {
+        type boolean;
+        description "This leaf contains the configured state of the interface";
+        default true;
+      }
     
     leaf fib {
       type uint32 {
@@ -28,29 +42,48 @@ module netd-interfaces {
       description "FIB (routing table) number for this interface";
       default 0;
     }
-  }
-
-  augment "/if:interfaces/if:interface/ip:ipv4/ip:address" {
-    description "Add FIB support to IPv4 addresses";
-    
-    leaf fib {
-      type uint32 {
-        range "0..255";
+      
+      container ipv4 {
+        description "Parameters for the IPv4 address family";
+        
+        list address {
+          key "ip";
+          description "The list of configured IPv4 addresses on the interface";
+          
+          leaf ip {
+            type string;
+            description "The IPv4 address on the interface";
+          }
+          
+          leaf prefix-length {
+            type uint8 {
+              range "0..32";
       }
-      description "FIB (routing table) number for this IPv4 address";
-      default 0;
-    }
-  }
-
-  augment "/if:interfaces/if:interface/ip:ipv6/ip:address" {
-    description "Add FIB support to IPv6 addresses";
-    
-    leaf fib {
-      type uint32 {
-        range "0..255";
+            description "The length of the subnet prefix";
+          }
+        }
       }
-      description "FIB (routing table) number for this IPv6 address";
-      default 0;
+      
+      container ipv6 {
+        description "Parameters for the IPv6 address family";
+        
+        list address {
+          key "ip";
+          description "The list of configured IPv6 addresses on the interface";
+          
+          leaf ip {
+            type string;
+            description "The IPv6 address on the interface";
+          }
+          
+          leaf prefix-length {
+            type uint8 {
+              range "0..128";
+      }
+            description "The length of the subnet prefix";
+          }
+        }
+      }
     }
   }
 } 

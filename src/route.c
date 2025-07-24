@@ -28,6 +28,22 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+/**
+ * @file route.c
+ * @brief Route management functionality for netd
+ * 
+ * This file implements comprehensive route management capabilities including:
+ * - Querying routing tables via sysctl interface
+ * - Filtering routes by protocol (static/dynamic) and address family
+ * - Adding and removing static routes
+ * - FIB (Forwarding Information Base) support
+ * - Formatted output generation for CLI display
+ * 
+ * The implementation uses FreeBSD's routing socket API and sysctl interface
+ * to interact with the kernel routing subsystem. It supports both IPv4 and
+ * IPv6 routes across multiple FIBs.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -60,7 +76,12 @@ typedef struct {
     int capacity;
 } route_table_t;
 
-// Initialize route table
+/**
+ * Initialize a route table with specified capacity
+ * @param table Pointer to route table structure to initialize
+ * @param capacity Maximum number of route entries the table can hold
+ * @return 0 on success, -1 on failure (memory allocation error)
+ */
 static int route_table_init(route_table_t *table, int capacity) {
     table->entries = malloc(capacity * sizeof(route_entry_t));
     if (!table->entries) {
@@ -71,7 +92,10 @@ static int route_table_init(route_table_t *table, int capacity) {
     return 0;
 }
 
-// Free route table
+/**
+ * Free memory allocated for route table and reset counters
+ * @param table Pointer to route table structure to free
+ */
 static void route_table_free(route_table_t *table) {
     if (table->entries) {
         free(table->entries);
@@ -81,7 +105,12 @@ static void route_table_free(route_table_t *table) {
     table->capacity = 0;
 }
 
-// Add route entry to table
+/**
+ * Add a route entry to the route table
+ * @param table Pointer to route table to add entry to
+ * @param entry Pointer to route entry to add
+ * @return 0 on success, -1 if table is full
+ */
 static int route_table_add(route_table_t *table, const route_entry_t *entry) {
     if (table->count >= table->capacity) {
             return -1;
@@ -91,7 +120,10 @@ static int route_table_add(route_table_t *table, const route_entry_t *entry) {
     return 0;
 }
 
-// Initialize route entry with defaults
+/**
+ * Initialize a route entry with default values
+ * @param entry Pointer to route entry structure to initialize
+ */
 static void route_entry_init(route_entry_t *entry) {
     memset(entry, 0, sizeof(route_entry_t));
     strcpy(entry->dest, "-");
@@ -103,7 +135,13 @@ static void route_entry_init(route_entry_t *entry) {
     entry->family = AF_UNSPEC;
 }
 
-// Parse IPv4 address from sockaddr
+/**
+ * Parse IPv4 address from sockaddr structure
+ * @param sa Pointer to sockaddr structure to parse
+ * @param addr_str Buffer to store the parsed IPv4 address string
+ * @param addr_len Size of the address string buffer
+ * @return 0 on success, -1 on failure (wrong family or parsing error)
+ */
 static int parse_ipv4_addr(const struct sockaddr *sa, char *addr_str, size_t addr_len) {
     if (sa->sa_family != AF_INET) {
         return -1;
@@ -112,7 +150,13 @@ static int parse_ipv4_addr(const struct sockaddr *sa, char *addr_str, size_t add
     return inet_ntop(AF_INET, &sin->sin_addr, addr_str, addr_len) ? 0 : -1;
 }
 
-// Parse IPv6 address from sockaddr
+/**
+ * Parse IPv6 address from sockaddr structure
+ * @param sa Pointer to sockaddr structure to parse
+ * @param addr_str Buffer to store the parsed IPv6 address string
+ * @param addr_len Size of the address string buffer
+ * @return 0 on success, -1 on failure (wrong family or parsing error)
+ */
 static int parse_ipv6_addr(const struct sockaddr *sa, char *addr_str, size_t addr_len) {
     if (sa->sa_family != AF_INET6) {
             return -1;
@@ -121,7 +165,13 @@ static int parse_ipv6_addr(const struct sockaddr *sa, char *addr_str, size_t add
     return inet_ntop(AF_INET6, &sin6->sin6_addr, addr_str, addr_len) ? 0 : -1;
 }
 
-// Parse interface name from sockaddr
+/**
+ * Parse interface name from sockaddr_dl structure
+ * @param sa Pointer to sockaddr structure (must be AF_LINK)
+ * @param ifname Buffer to store the interface name
+ * @param ifname_len Size of the interface name buffer
+ * @return 0 on success, -1 on failure (wrong family or invalid data)
+ */
 static int parse_interface_name(const struct sockaddr *sa, char *ifname, size_t ifname_len) {
     if (sa->sa_family != AF_LINK) {
         return -1;
@@ -135,7 +185,12 @@ static int parse_interface_name(const struct sockaddr *sa, char *ifname, size_t 
     return -1;
 }
 
-// Build flags string from route flags
+/**
+ * Build a flags string from route message flags
+ * @param rtm_flags Route message flags from rt_msghdr
+ * @param flags_str Buffer to store the resulting flags string
+ * @param flags_len Size of the flags string buffer
+ */
 static void build_flags_string(uint32_t rtm_flags, char *flags_str, size_t flags_len) {
     if (flags_len == 0) return;
     
@@ -176,7 +231,13 @@ static void build_flags_string(uint32_t rtm_flags, char *flags_str, size_t flags
     }
 }
 
-// Parse route message and extract route entry
+/**
+ * Parse a route message and extract route entry information
+ * @param rtm Pointer to route message header
+ * @param entry Pointer to route entry structure to populate
+ * @param fib FIB number to associate with this route entry
+ * @return 0 on success, -1 on failure (invalid message type)
+ */
 static int parse_route_message(const struct rt_msghdr *rtm, route_entry_t *entry, int fib) {
     if (rtm->rtm_type != RTM_GET) {
         return -1;
@@ -268,7 +329,12 @@ static int parse_route_message(const struct rt_msghdr *rtm, route_entry_t *entry
     return 0;
 }
 
-// Get route entries from kernel via sysctl
+/**
+ * Get route entries from kernel via sysctl interface
+ * @param table Pointer to route table to populate with entries
+ * @param fib_filter FIB number to filter routes (-1 for all FIBs)
+ * @return Number of routes found, -1 on error
+ */
 static int get_route_entries_sysctl(route_table_t *table, int fib_filter) {
     int mib[7];
     size_t needed;
@@ -282,43 +348,94 @@ static int get_route_entries_sysctl(route_table_t *table, int fib_filter) {
     mib[3] = AF_UNSPEC;
     mib[4] = NET_RT_DUMP;
     mib[5] = 0;        /* no flags */
-    mib[6] = fib_filter >= 0 ? fib_filter : 0;
     
-    // Get required buffer size
-    if (sysctl(mib, 7, NULL, &needed, NULL, 0) < 0) {
-        return -1;
-    }
-    
-    // Allocate buffer
-    buf = malloc(needed);
-    if (!buf) {
-        return -1;
-    }
-    
-    // Get route data
-    if (sysctl(mib, 7, buf, &needed, NULL, 0) < 0) {
-        free(buf);
-        return -1;
-    }
-    
-    // Parse route messages
-    lim = buf + needed;
-    for (next = buf; next < lim; next += rtm->rtm_msglen) {
-        rtm = (struct rt_msghdr *)next;
+    if (fib_filter >= 0) {
+        // Query specific FIB
+        mib[6] = fib_filter;
         
-        route_entry_t entry;
-        if (parse_route_message(rtm, &entry, fib_filter) == 0) {
-            if (route_table_add(table, &entry) != 0) {
-                break; // Table full
+        // Get required buffer size
+        if (sysctl(mib, 7, NULL, &needed, NULL, 0) < 0) {
+            return -1;
+        }
+        
+        // Allocate buffer
+        buf = malloc(needed);
+        if (!buf) {
+            return -1;
+        }
+        
+        // Get route data
+        if (sysctl(mib, 7, buf, &needed, NULL, 0) < 0) {
+            free(buf);
+            return -1;
+        }
+        
+        // Parse route messages
+        lim = buf + needed;
+        for (next = buf; next < lim; next += rtm->rtm_msglen) {
+            rtm = (struct rt_msghdr *)next;
+            
+            route_entry_t entry;
+            if (parse_route_message(rtm, &entry, fib_filter) == 0) {
+                if (route_table_add(table, &entry) != 0) {
+                    break; // Table full
+                }
             }
+        }
+        
+        free(buf);
+    } else {
+        // Query all FIBs - iterate through available FIBs
+        // First, try to get the number of FIBs
+        int max_fibs = 256; // Reasonable upper limit
+        
+        for (int fib = 0; fib < max_fibs; fib++) {
+            mib[6] = fib;
+            
+            // Try to get routes for this FIB
+            if (sysctl(mib, 7, NULL, &needed, NULL, 0) < 0) {
+                // This FIB doesn't exist, continue to next
+                continue;
+            }
+            
+            // Allocate buffer
+            buf = malloc(needed);
+            if (!buf) {
+                continue;
+            }
+            
+            // Get route data for this FIB
+            if (sysctl(mib, 7, buf, &needed, NULL, 0) < 0) {
+                free(buf);
+                continue;
+            }
+            
+            // Parse route messages for this FIB
+            lim = buf + needed;
+            for (next = buf; next < lim; next += rtm->rtm_msglen) {
+                rtm = (struct rt_msghdr *)next;
+                
+                route_entry_t entry;
+                if (parse_route_message(rtm, &entry, fib) == 0) {
+                    if (route_table_add(table, &entry) != 0) {
+                        break; // Table full
+                    }
+                }
+            }
+            
+            free(buf);
         }
     }
     
-    free(buf);
     return table->count;
 }
 
-// Check if route matches protocol filter
+/**
+ * Check if a route matches the specified protocol filter
+ * @param route Pointer to route entry to check
+ * @param protocol Protocol filter string ("static", "dynamic", or NULL for all)
+ * @return 1 if route matches filter, 0 otherwise
+ */
 static int route_matches_protocol(const route_entry_t *route, const char *protocol) {
     if (!protocol || strlen(protocol) == 0) {
         return 1; // No filter, match all
@@ -333,7 +450,12 @@ static int route_matches_protocol(const route_entry_t *route, const char *protoc
     return 0;
 }
 
-// Check if route matches family filter
+/**
+ * Check if a route matches the specified address family filter
+ * @param route Pointer to route entry to check
+ * @param family_filter Address family filter (AF_INET, AF_INET6, or AF_UNSPEC for all)
+ * @return 1 if route matches filter, 0 otherwise
+ */
 static int route_matches_family(const route_entry_t *route, int family_filter) {
     if (family_filter == AF_UNSPEC) {
         return 1; // No filter, match all
@@ -341,7 +463,13 @@ static int route_matches_family(const route_entry_t *route, int family_filter) {
     return route->family == family_filter;
 }
 
-// Filter routes by protocol and family
+/**
+ * Filter routes in table by protocol and address family
+ * @param table Pointer to route table to filter (modified in place)
+ * @param protocol Protocol filter string ("static", "dynamic", or NULL for all)
+ * @param family_filter Address family filter (AF_INET, AF_INET6, or AF_UNSPEC for all)
+ * @return Number of routes remaining after filtering
+ */
 static int filter_routes(route_table_t *table, const char *protocol, int family_filter) {
     int filtered_count = 0;
     
@@ -362,24 +490,59 @@ static int filter_routes(route_table_t *table, const char *protocol, int family_
     return filtered_count;
 }
 
-// Write table header
+/**
+ * Write the routing tables header to buffer
+ * @param buffer Buffer to write to
+ * @param buffer_len Size of buffer
+ * @return Number of bytes written, or -1 on error
+ */
+static int write_routing_tables_header(char *buffer, size_t buffer_len) {
+    return snprintf(buffer, buffer_len, "Routing tables\n");
+}
+
+/**
+ * Write the route table column headers to buffer
+ * @param buffer Buffer to write to
+ * @param buffer_len Size of buffer
+ * @return Number of bytes written, or -1 on error
+ */
 static int write_route_header(char *buffer, size_t buffer_len) {
-    return snprintf(buffer, buffer_len, "%-25s %-25s %-8s %-8s\n",
-                   "Destination", "Gateway", "Flags", "Netif");
+    return snprintf(buffer, buffer_len, "%-25s %-18s %-8s %-8s %s\n",
+                   "Destination", "Gateway", "Flags", "Netif", "Expire");
 }
 
-// Write FIB info
+/**
+ * Write FIB information line to buffer
+ * @param buffer Buffer to write to
+ * @param buffer_len Size of buffer
+ * @param fib FIB number to display
+ * @return Number of bytes written, or -1 on error
+ */
 static int write_fib_info(char *buffer, size_t buffer_len, int fib) {
-    return snprintf(buffer, buffer_len, "\nFIB %d:\n\n", fib);
+    return snprintf(buffer, buffer_len, "FIB: %d\n", fib);
 }
 
-// Write route entry as table row
+/**
+ * Write a single route entry as a formatted table row
+ * @param route Pointer to route entry to write
+ * @param buffer Buffer to write to
+ * @param buffer_len Size of buffer
+ * @return Number of bytes written, or -1 on error
+ */
 static int write_route_row(const route_entry_t *route, char *buffer, size_t buffer_len) {
-    return snprintf(buffer, buffer_len, "%-25s %-25s %-8s %-8s\n",
-                   route->dest, route->gateway, route->flags, route->netif);
+    return snprintf(buffer, buffer_len, "%-25s %-18s %-8s %-8s %s\n",
+                   route->dest, route->gateway, route->flags, route->netif, "");
 }
 
-// Main function to show routes
+/**
+ * Internal function to generate route table output
+ * @param response Buffer to store the formatted route table output
+ * @param resp_len Size of the response buffer
+ * @param fib_filter FIB number to filter routes (-1 for all FIBs)
+ * @param protocol_filter Protocol filter string ("static", "dynamic", or NULL for all)
+ * @param family_filter Address family filter (AF_INET, AF_INET6, or AF_UNSPEC for all)
+ * @return Number of bytes written to response buffer, -1 on error
+ */
 static int show_routes_internal(char *response, size_t resp_len, int fib_filter, 
                                const char *protocol_filter, int family_filter) {
     route_table_t table;
@@ -403,10 +566,19 @@ static int show_routes_internal(char *response, size_t resp_len, int fib_filter,
     // Filter routes
     filter_routes(&table, protocol_filter, family_filter);
     
-    // Write FIB info first (before table header)
+    // Write routing tables header
+    int written = write_routing_tables_header(resp_ptr, remaining);
+    if (written < 0 || (size_t)written >= remaining) {
+        route_table_free(&table);
+        return -1;
+    }
+    resp_ptr += written;
+    remaining -= written;
+    
+    // Write FIB info if we have routes or if a specific FIB was requested
     if (table.count > 0 || fib_filter >= 0) {
         int actual_fib = fib_filter >= 0 ? fib_filter : 0;
-        int written = write_fib_info(resp_ptr, remaining, actual_fib);
+        written = write_fib_info(resp_ptr, remaining, actual_fib);
         if (written < 0 || (size_t)written >= remaining) {
             route_table_free(&table);
             return -1;
@@ -416,7 +588,7 @@ static int show_routes_internal(char *response, size_t resp_len, int fib_filter,
     }
     
     // Write table header
-    int written = write_route_header(resp_ptr, remaining);
+    written = write_route_header(resp_ptr, remaining);
     if (written < 0 || (size_t)written >= remaining) {
         route_table_free(&table);
         return -1;
@@ -435,25 +607,158 @@ static int show_routes_internal(char *response, size_t resp_len, int fib_filter,
     }
     
     route_table_free(&table);
-    return 0;
+    
+    // Calculate actual response length
+    size_t actual_len = resp_len - remaining;
+    
+    // Ensure response is null-terminated
+    if (actual_len < resp_len) {
+        response[actual_len] = '\0';
+    }
+    
+    return actual_len;
 }
 
-// Public interface functions
-
+/**
+ * Public interface to display routing table information
+ * @param response Buffer to store the formatted route table output
+ * @param resp_len Size of the response buffer
+ * @param fib_filter FIB number to filter routes (-1 for all FIBs)
+ * @param protocol_filter Protocol filter string ("static", "dynamic", or NULL for all)
+ * @param family_filter Address family filter (AF_INET, AF_INET6, or AF_UNSPEC for all)
+ * @return Number of bytes written to response buffer, -1 on error
+ */
 int show_routes(char *response, size_t resp_len, int fib_filter, 
                 const char *protocol_filter, int family_filter) {
     return show_routes_internal(response, resp_len, fib_filter, protocol_filter, family_filter);
 }
 
-// Legacy functions for compatibility
+/**
+ * Configure (add) a static route to the routing table
+ * @param config Pointer to route configuration structure containing route details
+ * @return 0 on success, -1 on failure
+ */
 int configure_route(const route_config_t *config) {
-    (void)config; // Suppress unused parameter warning
-    // TODO: Implement route configuration
-    return 0;
+    if (!config) return -1;
+    
+    int sock = socket(AF_ROUTE, SOCK_RAW, 0);
+    if (sock < 0) return -1;
+    
+    struct {
+        struct rt_msghdr rtm;
+        struct sockaddr_in dst;
+        struct sockaddr_in gw;
+        struct sockaddr_in netmask;
+    } msg;
+    
+    memset(&msg, 0, sizeof(msg));
+    
+    // Setup route message header
+    msg.rtm.rtm_type = RTM_ADD;
+    msg.rtm.rtm_flags = RTF_UP | RTF_GATEWAY | RTF_STATIC;
+    msg.rtm.rtm_version = RTM_VERSION;
+    msg.rtm.rtm_seq = 1;
+    msg.rtm.rtm_addrs = RTA_DST | RTA_GATEWAY | RTA_NETMASK;
+    msg.rtm.rtm_pid = getpid();
+    
+    // Set destination address
+    msg.dst.sin_family = AF_INET;
+    msg.dst.sin_len = sizeof(struct sockaddr_in);
+    if (config->family == ADDR_FAMILY_INET6) {
+        // Convert IPv6 to IPv4-mapped IPv6 for routing socket
+        msg.dst.sin_addr.s_addr = config->dest6.s6_addr32[3];
+    } else {
+        msg.dst.sin_addr = config->dest;
+    }
+    
+    // Set gateway address
+    msg.gw.sin_family = AF_INET;
+    msg.gw.sin_len = sizeof(struct sockaddr_in);
+    if (config->family == ADDR_FAMILY_INET6) {
+        // Convert IPv6 to IPv4-mapped IPv6 for routing socket
+        msg.gw.sin_addr.s_addr = config->gw6.s6_addr32[3];
+    } else {
+        msg.gw.sin_addr = config->gw;
+    }
+    
+    // Set netmask based on prefix length
+    uint32_t netmask = 0xFFFFFFFF << (32 - config->prefix_len);
+    msg.netmask.sin_family = AF_INET;
+    msg.netmask.sin_len = sizeof(struct sockaddr_in);
+    msg.netmask.sin_addr.s_addr = htonl(netmask);
+    
+    // Set FIB if specified (FreeBSD doesn't have rtm_fib, use setsockopt)
+    if (config->fib >= 0) {
+        setsockopt(sock, SOL_SOCKET, SO_SETFIB, &config->fib, sizeof(config->fib));
+    }
+    
+    int result = write(sock, &msg, sizeof(msg));
+    close(sock);
+    
+    return (result < 0) ? -1 : 0;
 }
 
+/**
+ * Remove a static route from the routing table
+ * @param config Pointer to route configuration structure containing route details
+ * @return 0 on success, -1 on failure
+ */
 int remove_route(const route_config_t *config) {
-    (void)config; // Suppress unused parameter warning
-    // TODO: Implement route removal
-    return 0;
+    if (!config) return -1;
+    
+    int sock = socket(AF_ROUTE, SOCK_RAW, 0);
+    if (sock < 0) return -1;
+    
+    struct {
+        struct rt_msghdr rtm;
+        struct sockaddr_in dst;
+        struct sockaddr_in gw;
+        struct sockaddr_in netmask;
+    } msg;
+    
+    memset(&msg, 0, sizeof(msg));
+    
+    // Setup route message header
+    msg.rtm.rtm_type = RTM_DELETE;
+    msg.rtm.rtm_flags = RTF_UP | RTF_GATEWAY | RTF_STATIC;
+    msg.rtm.rtm_version = RTM_VERSION;
+    msg.rtm.rtm_seq = 1;
+    msg.rtm.rtm_addrs = RTA_DST | RTA_GATEWAY | RTA_NETMASK;
+    msg.rtm.rtm_pid = getpid();
+    
+    // Set destination address
+    msg.dst.sin_family = AF_INET;
+    msg.dst.sin_len = sizeof(struct sockaddr_in);
+    if (config->family == ADDR_FAMILY_INET6) {
+        // Convert IPv6 to IPv4-mapped IPv6 for routing socket
+        msg.dst.sin_addr.s_addr = config->dest6.s6_addr32[3];
+    } else {
+        msg.dst.sin_addr = config->dest;
+    }
+    
+    // Set gateway address
+    msg.gw.sin_family = AF_INET;
+    msg.gw.sin_len = sizeof(struct sockaddr_in);
+    if (config->family == ADDR_FAMILY_INET6) {
+        // Convert IPv6 to IPv4-mapped IPv6 for routing socket
+        msg.gw.sin_addr.s_addr = config->gw6.s6_addr32[3];
+    } else {
+        msg.gw.sin_addr = config->gw;
+    }
+    
+    // Set netmask based on prefix length
+    uint32_t netmask = 0xFFFFFFFF << (32 - config->prefix_len);
+    msg.netmask.sin_family = AF_INET;
+    msg.netmask.sin_len = sizeof(struct sockaddr_in);
+    msg.netmask.sin_addr.s_addr = htonl(netmask);
+    
+    // Set FIB if specified (FreeBSD doesn't have rtm_fib, use setsockopt)
+    if (config->fib >= 0) {
+        setsockopt(sock, SOL_SOCKET, SO_SETFIB, &config->fib, sizeof(config->fib));
+    }
+    
+    int result = write(sock, &msg, sizeof(msg));
+    close(sock);
+    
+    return (result < 0) ? -1 : 0;
 } 

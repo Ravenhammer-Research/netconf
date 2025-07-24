@@ -28,6 +28,22 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+/**
+ * @file netconf_yang.c
+ * @brief YANG data model support for netd NETCONF implementation
+ * 
+ * This file provides YANG data model support for the netd NETCONF server,
+ * including:
+ * - libyang context initialization and management
+ * - YANG module loading (ietf-interfaces, netd-simple, etc.)
+ * - Conversion between internal data structures and YANG data trees
+ * - YANG-compliant XML generation for NETCONF responses
+ * - Data validation against YANG schemas
+ * 
+ * The implementation uses libyang library to provide standards-compliant
+ * YANG data modeling and validation capabilities as specified in RFC 7950.
+ */
+
 #include "common.h"
 #include <libnetconf2/netconf.h>
 #include <libyang/libyang.h>
@@ -36,17 +52,32 @@
 // Global libyang context
 static struct ly_ctx *yang_ctx = NULL;
 
-// Initialize YANG context and load models
+/**
+ * Initialize YANG context and load required modules
+ * @return 0 on success, -1 on failure
+ */
 int init_yang_context(void) {
-    // Create new libyang context with local directory first
-    if (ly_ctx_new("./yang:/usr/local/share/yang", 0, &yang_ctx) != LY_SUCCESS) {
-        fprintf(stderr, "Failed to create libyang context\n");
+    // Create libyang context - use local yang directory
+    LY_ERR ret = ly_ctx_new("./yang", 0, &yang_ctx);
+    if (ret != LY_SUCCESS || !yang_ctx) {
+        fprintf(stderr, "Failed to create YANG context\n");
         return -1;
     }
     
-    // Load our simplified YANG module
-    const struct lys_module *mod = ly_ctx_load_module(yang_ctx, "netd-simple", NULL, NULL);
-    if (!mod) {
+    // Load netd-interfaces module
+    if (!ly_ctx_load_module(yang_ctx, "netd-interfaces", NULL, NULL)) {
+        fprintf(stderr, "Failed to load netd-interfaces module\n");
+        return -1;
+    }
+    
+    // Load netd-routing module
+    if (!ly_ctx_load_module(yang_ctx, "netd-routing", NULL, NULL)) {
+        fprintf(stderr, "Failed to load netd-routing module\n");
+        return -1;
+    }
+    
+    // Load netd-simple module
+    if (!ly_ctx_load_module(yang_ctx, "netd-simple", NULL, NULL)) {
         fprintf(stderr, "Failed to load netd-simple module\n");
         return -1;
     }
@@ -55,7 +86,9 @@ int init_yang_context(void) {
     return 0;
 }
 
-// Cleanup YANG context
+/**
+ * Cleanup YANG context and free resources
+ */
 void cleanup_yang_context(void) {
     if (yang_ctx) {
         ly_ctx_destroy(yang_ctx);
@@ -63,7 +96,11 @@ void cleanup_yang_context(void) {
     }
 }
 
-// Convert interface configuration to YANG data tree
+/**
+ * Convert interface configuration to YANG data tree
+ * @param config Pointer to interface configuration
+ * @return Pointer to YANG data node, or NULL on failure
+ */
 struct lyd_node* interface_to_yang(const if_config_t *config) {
     char path[512];
     char value[256];
@@ -125,7 +162,11 @@ struct lyd_node* interface_to_yang(const if_config_t *config) {
     return interface;
 }
 
-// Convert route configuration to YANG data tree
+/**
+ * Convert route configuration to YANG data tree
+ * @param config Pointer to route configuration
+ * @return Pointer to YANG data node, or NULL on failure
+ */
 struct lyd_node* route_to_yang(const route_config_t *config) {
     char path[512];
     char value[256];
@@ -175,7 +216,12 @@ struct lyd_node* route_to_yang(const route_config_t *config) {
     return NULL;
 }
 
-// Generate XML from YANG data tree
+/**
+ * Generate XML from YANG data tree
+ * @param data_tree Pointer to YANG data tree
+ * @param options Print options for XML generation
+ * @return XML string, or NULL on failure (must be freed by caller)
+ */
 char* yang_to_xml(struct lyd_node *data_tree, int options) {
     char *xml = NULL;
     
@@ -186,7 +232,11 @@ char* yang_to_xml(struct lyd_node *data_tree, int options) {
     return xml;
 }
 
-// Parse XML and convert to YANG data tree
+/**
+ * Parse XML and convert to YANG data tree
+ * @param xml_data XML data string to parse
+ * @return Pointer to YANG data tree, or NULL on failure
+ */
 struct lyd_node* xml_to_yang(const char *xml_data) {
     struct lyd_node *data_tree = NULL;
     
@@ -197,7 +247,13 @@ struct lyd_node* xml_to_yang(const char *xml_data) {
     return data_tree;
 }
 
-// Handle NETCONF get-config with YANG
+/**
+ * Handle NETCONF get-config request using YANG data models
+ * @param filter Filter string for selective data retrieval
+ * @param response Buffer to store NETCONF response
+ * @param resp_len Size of response buffer
+ * @return 0 on success, -1 on failure
+ */
 int handle_netconf_get_config_yang(const char *filter, char *response, size_t resp_len) {
     (void)filter; // Suppress unused parameter warning
     struct lyd_node *data_tree = NULL;
@@ -233,7 +289,13 @@ int handle_netconf_get_config_yang(const char *filter, char *response, size_t re
     return 0;
 }
 
-// Handle NETCONF edit-config with YANG
+/**
+ * Handle NETCONF edit-config request using YANG data models
+ * @param config_xml Configuration data in XML format
+ * @param response Buffer to store NETCONF response
+ * @param resp_len Size of response buffer
+ * @return 0 on success, -1 on failure
+ */
 int handle_netconf_edit_config_yang(const char *config_xml, char *response, size_t resp_len) {
     struct lyd_node *data_tree = NULL;
     int ret = 0;

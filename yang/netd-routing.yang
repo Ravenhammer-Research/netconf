@@ -3,13 +3,6 @@ module netd-routing {
   namespace "urn:netd:routing";
   prefix netd-rt;
 
-  import ietf-routing {
-    prefix rt;
-  }
-  import ietf-inet-types {
-    prefix inet;
-  }
-
   organization "NetD Project";
   contact "netd@example.com";
   description "Routing configuration for NetD";
@@ -18,25 +11,49 @@ module netd-routing {
     description "Initial version";
   }
 
-  augment "/rt:routing/rt:routing-instance/rt:routing-protocols/rt:routing-protocol/rt:static-routes" {
-    description "Add FIB support to static routes";
+  container routing {
+    description "Routing configuration container";
     
-    container static-route {
-      description "Static route configuration";
+    container routing-instance {
+      description "Default routing instance";
+      
+      leaf name {
+        type string;
+        description "Routing instance name";
+        default "default";
+      }
+      
+      container routing-protocols {
+        description "Routing protocols container";
+        
+        container routing-protocol {
+          description "Static routing protocol";
+          
+          leaf type {
+            type string;
+            description "Routing protocol type";
+            default "static";
+          }
+    
+          container static-routes {
+            description "Static routes configuration";
       
       list route {
-        key "destination";
+              key "destination-prefix";
         description "Static route entry";
         
-        leaf destination {
-          type inet:ip-prefix;
-          description "Destination network";
+              leaf destination-prefix {
+                type string;
+                description "Destination network prefix (e.g., 192.168.1.0/24)";
         }
+              
+              container next-hop {
+                description "Next hop configuration";
         
-        leaf gateway {
-          type inet:ip-address;
-          mandatory true;
-          description "Gateway address";
+                leaf next-hop-address {
+                  type string;
+                  description "Next hop IP address";
+                }
         }
         
         leaf fib {
@@ -46,10 +63,8 @@ module netd-routing {
           description "FIB (routing table) number for this route";
           default 0;
         }
-        
-        leaf description {
-          type string;
-          description "Route description";
+            }
+          }
         }
       }
     }

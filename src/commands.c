@@ -28,6 +28,24 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+/**
+ * @file commands.c
+ * @brief Command line parsing and validation for netd
+ * 
+ * This file implements comprehensive command line parsing functionality
+ * for the netd CLI interface, including:
+ * - Lexical analysis and tokenization of command strings
+ * - Command syntax validation and argument parsing
+ * - Support for show, set, delete, commit, and save operations
+ * - Interface and route command parameter handling
+ * - Address parsing for IPv4 and IPv6 configurations
+ * - Usage text generation and help functionality
+ * 
+ * The parser supports a structured command syntax similar to Cisco IOS
+ * and other network management CLIs, with proper validation and error
+ * reporting for invalid commands or parameters.
+ */
+
 #include "common.h"
 
 // Command definition structure
@@ -83,6 +101,11 @@ typedef struct {
     int pos;
 } lexer_t;
 
+/**
+ * Initialize lexer with input string, tokenizing on whitespace
+ * @param lexer Pointer to lexer structure to initialize
+ * @param input Input string to tokenize
+ */
 static void lexer_init(lexer_t *lexer, const char *input) {
     lexer->count = 0;
     lexer->pos = 0;
@@ -98,29 +121,57 @@ static void lexer_init(lexer_t *lexer, const char *input) {
     free(input_copy);
 }
 
+/**
+ * Clean up lexer by freeing allocated token strings
+ * @param lexer Pointer to lexer structure to clean up
+ */
 static void lexer_cleanup(lexer_t *lexer) {
     for (int i = 0; i < lexer->count; i++) {
         free(lexer->tokens[i]);
     }
 }
 
+/**
+ * Peek at current token without advancing position
+ * @param lexer Pointer to lexer structure
+ * @return Current token string, or NULL if at end
+ */
 static const char* lexer_peek(lexer_t *lexer) {
     return (lexer->pos < lexer->count) ? lexer->tokens[lexer->pos] : NULL;
 }
 
+/**
+ * Get current token and advance position
+ * @param lexer Pointer to lexer structure
+ * @return Current token string, or NULL if at end
+ */
 static const char* lexer_next(lexer_t *lexer) {
     return (lexer->pos < lexer->count) ? lexer->tokens[lexer->pos++] : NULL;
 }
 
+/**
+ * Check if more tokens are available
+ * @param lexer Pointer to lexer structure
+ * @return 1 if more tokens available, 0 otherwise
+ */
 static int lexer_has_more(lexer_t *lexer) {
     return lexer->pos < lexer->count;
 }
 
+/**
+ * Get number of remaining tokens
+ * @param lexer Pointer to lexer structure
+ * @return Number of tokens remaining
+ */
 static int lexer_remaining(lexer_t *lexer) {
     return lexer->count - lexer->pos;
 }
 
-// Find command definition
+/**
+ * Find command definition by name
+ * @param name Command name to search for
+ * @return Pointer to command definition, or NULL if not found
+ */
 static const cmd_def_t* find_cmd_def(const char *name) {
     for (int i = 0; cmd_definitions[i].name != NULL; i++) {
         if (strcmp(cmd_definitions[i].name, name) == 0) {
@@ -130,7 +181,11 @@ static const cmd_def_t* find_cmd_def(const char *name) {
     return NULL;
 }
 
-// Find target definition
+/**
+ * Find target definition by target name
+ * @param target Target name to search for
+ * @return Pointer to target definition, or NULL if not found
+ */
 static const target_def_t* find_target_def(const char *target) {
     for (int i = 0; target_definitions[i].target != NULL; i++) {
         if (strcmp(target_definitions[i].target, target) == 0) {
@@ -140,7 +195,12 @@ static const target_def_t* find_target_def(const char *target) {
     return NULL;
 }
 
-// Validate argument against valid args list
+/**
+ * Validate if argument is in the list of valid arguments
+ * @param arg Argument to validate
+ * @param valid_args Array of valid argument strings (NULL-terminated)
+ * @return 1 if argument is valid, 0 otherwise
+ */
 static int is_valid_arg(const char *arg, const char *const valid_args[]) {
     for (int i = 0; valid_args[i] != NULL; i++) {
         if (strcmp(valid_args[i], arg) == 0) {
@@ -155,12 +215,19 @@ static int parse_address(const char *addr_str, addr_family_t family,
                         struct in_addr *addr, struct in6_addr *addr6);
 static int parse_cidr(const char *cidr_str, int *prefix_len);
 
-// Parse route arguments
+/**
+ * Parse route command arguments (fib, protocol, inet/inet6)
+ * @param lexer Pointer to lexer structure with tokens
+ * @param cmd Pointer to command structure to populate
+ * @return 0 on success, -1 on error
+ */
 static int parse_route_args(lexer_t *lexer, command_t *cmd) {
     const char *token;
+    int has_args = 0;
     
     while (lexer_has_more(lexer)) {
         token = lexer_peek(lexer);
+        has_args = 1;
         
         if (strcmp(token, "fib") == 0) {
             lexer_next(lexer);
@@ -193,10 +260,20 @@ static int parse_route_args(lexer_t *lexer, command_t *cmd) {
         }
     }
     
+    // Require at least one argument
+    if (!has_args) {
+        return -1; // Error: show route requires at least one argument
+    }
+    
     return 0;
 }
 
-// Parse interface arguments
+/**
+ * Parse interface command arguments (interface type)
+ * @param lexer Pointer to lexer structure with tokens
+ * @param cmd Pointer to command structure to populate
+ * @return 0 on success, -1 on error
+ */
 static int parse_interface_args(lexer_t *lexer, command_t *cmd) {
     if (lexer_has_more(lexer)) {
         const char *token = lexer_next(lexer);
@@ -209,7 +286,12 @@ static int parse_interface_args(lexer_t *lexer, command_t *cmd) {
     return 0;
 }
 
-// Parse set command arguments
+/**
+ * Parse set command arguments for interface and route configuration
+ * @param lexer Pointer to lexer structure with tokens
+ * @param cmd Pointer to command structure to populate
+ * @return 0 on success, -1 on error
+ */
 static int parse_set_args(lexer_t *lexer, command_t *cmd) {
     const char *token;
     
@@ -306,7 +388,14 @@ static int parse_set_args(lexer_t *lexer, command_t *cmd) {
     return 0;
 }
 
-// Helper functions (keep existing implementations)
+/**
+ * Parse IP address string into binary format
+ * @param addr_str Address string to parse
+ * @param family Address family (ADDR_FAMILY_INET4 or ADDR_FAMILY_INET6)
+ * @param addr Pointer to IPv4 address structure (for IPv4)
+ * @param addr6 Pointer to IPv6 address structure (for IPv6)
+ * @return 1 on success, 0 on failure
+ */
 static int parse_address(const char *addr_str, addr_family_t family, 
                         struct in_addr *addr, struct in6_addr *addr6) {
     if (family == ADDR_FAMILY_INET4) {
@@ -316,6 +405,12 @@ static int parse_address(const char *addr_str, addr_family_t family,
     }
 }
 
+/**
+ * Parse CIDR notation to extract prefix length
+ * @param cidr_str CIDR string (e.g., "192.168.1.0/24")
+ * @param prefix_len Pointer to store extracted prefix length
+ * @return 0 on success, -1 on failure
+ */
 static int parse_cidr(const char *cidr_str, int *prefix_len) {
     char *slash = strchr(cidr_str, '/');
     if (!slash) {
@@ -327,6 +422,12 @@ static int parse_cidr(const char *cidr_str, int *prefix_len) {
     return 0;
 }
 
+/**
+ * Parse command line string into command structure
+ * @param cmd_line Command line string to parse
+ * @param cmd Pointer to command structure to populate
+ * @return 0 on success, -1 on error
+ */
 int parse_command(const char *cmd_line, command_t *cmd) {
     memset(cmd, 0, sizeof(*cmd));
     
@@ -367,6 +468,11 @@ int parse_command(const char *cmd_line, command_t *cmd) {
     token = lexer_next(&lexer);
     strncpy(cmd->target, token, sizeof(cmd->target) - 1);
     
+    // Normalize "interfaces" to "interface"
+    if (strcmp(cmd->target, "interfaces") == 0) {
+        strcpy(cmd->target, "interface");
+    }
+    
     // Validate target
     const target_def_t *target_def = find_target_def(cmd->target);
     if (!target_def) {
@@ -390,6 +496,10 @@ int parse_command(const char *cmd_line, command_t *cmd) {
     return result;
 }
 
+/**
+ * Get usage text string for help display
+ * @return Static string containing usage information
+ */
 const char* get_usage_text(void) {
     return "Usage:\n"
            "  net [command]                    - One-shot mode\n"
@@ -411,6 +521,9 @@ const char* get_usage_text(void) {
            "\nTab completion is available for all commands.\n";
 }
 
+/**
+ * Print usage information to stdout
+ */
 void print_usage(void) {
     printf("%s", get_usage_text());
 } 
