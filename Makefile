@@ -1,11 +1,11 @@
 CC=		cc
-CFLAGS=		-Wall -Wextra -std=c99 -D_BSD_SOURCE -I/usr/local/include
+CFLAGS=		-Wall -Wextra -std=c99 -D_DEFAULT_SOURCE -I/usr/local/include
 LDFLAGS=	-L/usr/local/lib -lnetconf2 -lyang -lutil -lreadline -lexpat
 # Build targets
 all: net netd test_commands
 
-net: client.o netconf_client.o commands.o
-	$(CC) -o net client.o netconf_client.o commands.o $(LDFLAGS)
+net: client.o netconf_client.o commands.o table.o
+	$(CC) -o net client.o netconf_client.o commands.o table.o $(LDFLAGS)
 
 netd: server.o netconf_server.o netconf_yang.o ifconfig.o route.o commands.o
 	$(CC) -o netd server.o netconf_server.o netconf_yang.o ifconfig.o route.o commands.o $(LDFLAGS)
@@ -23,6 +23,9 @@ netconf_client.o: src/netconf_client.c src/common.h
 
 commands.o: src/commands.c src/common.h
 	$(CC) $(CFLAGS) -c src/commands.c
+
+table.o: src/table.c src/table.h src/common.h
+	$(CC) $(CFLAGS) -c src/table.c
 
 server.o: src/server.c src/common.h
 	$(CC) $(CFLAGS) -c src/server.c

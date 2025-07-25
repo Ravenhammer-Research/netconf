@@ -46,9 +46,13 @@
  */
 
 #include "common.h"
+#include "table.h"
 #include <readline/readline.h>
 #include <readline/history.h>
 #include <bsdxml.h>
+
+// Forward declaration
+extern void get_command_completions(const char *command_line, char **completions, int *max_count);
  
 // Structure to hold parsing state
 typedef struct {
@@ -61,6 +65,7 @@ typedef struct {
     char tunnel_vrf[64];  // Changed from tunnel_fib to tunnel_vrf
     char dest[64];
     char next[64];
+    char flags[16];
     int in_interface;
     int in_route;
     int in_name;
@@ -70,6 +75,7 @@ typedef struct {
     int in_tunnel_vrf;  // Changed from in_tunnel_fib to in_tunnel_vrf
     int in_dest;
     int in_next;
+    int in_flags;
     int header_printed;
 } parse_state_t;
 
@@ -183,6 +189,7 @@ static void XMLCALL start_element_handler(void *userData, const XML_Char *name, 
         state->in_route = 1;
         memset(state->dest, 0, sizeof(state->dest));
         memset(state->next, 0, sizeof(state->next));
+        memset(state->flags, 0, sizeof(state->flags));
     } else if (strcmp(local_name, "name") == 0) {
         state->in_name = 1;
     } else if (strcmp(local_name, "ip") == 0) {
@@ -197,6 +204,8 @@ static void XMLCALL start_element_handler(void *userData, const XML_Char *name, 
         state->in_dest = 1;
     } else if (strcmp(local_name, "next-hop-address") == 0) {
         state->in_next = 1;
+    } else if (strcmp(local_name, "flags") == 0) {
+        state->in_flags = 1;
     }
 }
 
@@ -217,7 +226,7 @@ static void XMLCALL end_element_handler(void *userData, const XML_Char *name) {
     }
     
     if (strcmp(local_name, "interface") == 0) {
-        // Display the interface
+        // Display the interface using table formatting
         if (strlen(state->ifname) > 0) {
             char ipv4_display[64];
             if (strlen(state->ipv4) > 0 && strlen(state->prefix) > 0) {
@@ -226,18 +235,18 @@ static void XMLCALL end_element_handler(void *userData, const XML_Char *name) {
                 strcpy(ipv4_display, "-");
             }
             
-            // Use FIB and TunnelFIB from XML, or default to "-" if not present
-            const char *vrf_display = (strlen(state->vrf) > 0) ? state->vrf : "-";
-            const char *tunnel_vrf_display = (strlen(state->tunnel_vrf) > 0) ? state->tunnel_vrf : "-";
+            // Use VRF and TunnelVRF from XML, or default to NULL if not present
+            const char *vrf_display = (strlen(state->vrf) > 0) ? state->vrf : NULL;
+            const char *tunnel_vrf_display = (strlen(state->tunnel_vrf) > 0) ? state->tunnel_vrf : NULL;
             
-            printf("%-12s %-18s %-18s %-8s %-8s %s\n", 
-                   state->ifname, ipv4_display, "-", vrf_display, tunnel_vrf_display, "1500");
+            print_interface_row(state->ifname, ipv4_display, NULL, vrf_display, tunnel_vrf_display, "1500");
         }
         state->in_interface = 0;
     } else if (strcmp(local_name, "route") == 0) {
-        // Display the route
+        // Display the route using table formatting
         if (strlen(state->dest) > 0 && strlen(state->next) > 0) {
-            printf("%-18s %-18s %-9s %-6s %s\n", state->dest, state->next, "UGS", "em0", "");
+            const char *flags = (strlen(state->flags) > 0) ? state->flags : "-";
+            print_route_row(state->dest, state->next, flags, "em0", NULL);
         }
         state->in_route = 0;
     } else if (strcmp(local_name, "name") == 0) {
@@ -254,6 +263,8 @@ static void XMLCALL end_element_handler(void *userData, const XML_Char *name) {
         state->in_dest = 0;
     } else if (strcmp(local_name, "next-hop-address") == 0) {
         state->in_next = 0;
+    } else if (strcmp(local_name, "flags") == 0) {
+        state->in_flags = 0;
     }
 }
 
@@ -280,6 +291,8 @@ static void XMLCALL character_data_handler(void *userData, const XML_Char *s, in
         strncat(state->dest, s, len);
     } else if (state->in_next && state->in_route) {
         strncat(state->next, s, len);
+    } else if (state->in_flags && state->in_route) {
+        strncat(state->flags, s, len);
     }
 }
 
@@ -301,9 +314,11 @@ static void parse_and_display_response(const char *response) {
     XML_SetElementHandler(parser, start_element_handler, end_element_handler);
     XML_SetCharacterDataHandler(parser, character_data_handler);
     
-    // Check response type and print header if needed
+    // Reset table state for new response
     if (strstr(response, "interfaces") || strstr(response, "ietf-interfaces")) {
-        printf("Interface    IPv4 Address       IPv6 Address       VRF      TunnelVRF MTU\n");
+        reset_table(0); // Reset interface table
+    } else if (strstr(response, "routes") || strstr(response, "routing")) {
+        reset_table(1); // Reset route table
     }
     
     // Try to parse the response as XML
@@ -327,23 +342,34 @@ static void parse_and_display_response(const char *response) {
  * @return Next possible completion or NULL when done
  */
 char* command_generator(const char* text, int state) {
-    static int list_index, len;
-    static const char* commands[] = {
-        "show", "set", "delete", "commit", "save", "help", "quit", "exit",
-        "interface", "route", "ethernet", "bridge", "gif", "tun", "tap",
-        "inet", "inet6", "addr", "protocol", "protocols", "static", "vrf"
-    };
+    static char **completions = NULL;
+    static int completion_count = 0;
+    static int current_index = 0;
     
     if (!state) {
-        list_index = 0;
-        len = strlen(text);
+        // First call - get completions from parser
+        if (completions) {
+            for (int i = 0; i < completion_count; i++) {
+                free(completions[i]);
+            }
+            free(completions);
+        }
+        
+        // Get the current line from readline
+        const char *line = rl_line_buffer;
+        int max_completions = 50;
+        completions = malloc(max_completions * sizeof(char*));
+        completion_count = max_completions;
+        
+        // Use the parser to get context-aware completions
+        get_command_completions(line, completions, &completion_count);
+        
+        current_index = 0;
     }
     
-    while (list_index < (int)(sizeof(commands)/sizeof(commands[0]))) {
-        const char* name = commands[list_index++];
-        if (strncmp(name, text, len) == 0) {
-            return strdup(name);
-        }
+    // Return next completion
+    if (current_index < completion_count) {
+        return strdup(completions[current_index++]);
     }
     
     return NULL;

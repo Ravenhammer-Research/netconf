@@ -349,84 +349,41 @@ static int get_route_entries_sysctl(route_table_t *table, int fib_filter) {
     mib[4] = NET_RT_DUMP;
     mib[5] = 0;        /* no flags */
     
-    if (fib_filter >= 0) {
-        // Query specific FIB
-        mib[6] = fib_filter;
-        
-        // Get required buffer size
-        if (sysctl(mib, 7, NULL, &needed, NULL, 0) < 0) {
-            return -1;
-        }
-        
-        // Allocate buffer
-        buf = malloc(needed);
-        if (!buf) {
-            return -1;
-        }
-        
-        // Get route data
-        if (sysctl(mib, 7, buf, &needed, NULL, 0) < 0) {
-            free(buf);
-            return -1;
-        }
-        
-        // Parse route messages
-        lim = buf + needed;
-        for (next = buf; next < lim; next += rtm->rtm_msglen) {
-            rtm = (struct rt_msghdr *)next;
-            
-            route_entry_t entry;
-            if (parse_route_message(rtm, &entry, fib_filter) == 0) {
-                if (route_table_add(table, &entry) != 0) {
-                    break; // Table full
-                }
-            }
-        }
-        
+    // Always query specific FIB (default to 0 if not specified)
+    int fib = (fib_filter >= 0) ? fib_filter : 0;
+    mib[6] = fib;
+    
+    // Get required buffer size
+    if (sysctl(mib, 7, NULL, &needed, NULL, 0) < 0) {
+        return -1;
+    }
+    
+    // Allocate buffer
+    buf = malloc(needed);
+    if (!buf) {
+        return -1;
+    }
+    
+    // Get route data
+    if (sysctl(mib, 7, buf, &needed, NULL, 0) < 0) {
         free(buf);
-    } else {
-        // Query all FIBs - iterate through available FIBs
-        // First, try to get the number of FIBs
-        int max_fibs = 256; // Reasonable upper limit
+        return -1;
+    }
+    
+    // Parse route messages
+    lim = buf + needed;
+    for (next = buf; next < lim; next += rtm->rtm_msglen) {
+        rtm = (struct rt_msghdr *)next;
         
-        for (int fib = 0; fib < max_fibs; fib++) {
-            mib[6] = fib;
-            
-            // Try to get routes for this FIB
-            if (sysctl(mib, 7, NULL, &needed, NULL, 0) < 0) {
-                // This FIB doesn't exist, continue to next
-                continue;
+        route_entry_t entry;
+        if (parse_route_message(rtm, &entry, fib) == 0) {
+            if (route_table_add(table, &entry) != 0) {
+                break; // Table full
             }
-            
-            // Allocate buffer
-            buf = malloc(needed);
-            if (!buf) {
-                continue;
-            }
-            
-            // Get route data for this FIB
-            if (sysctl(mib, 7, buf, &needed, NULL, 0) < 0) {
-                free(buf);
-                continue;
-            }
-            
-            // Parse route messages for this FIB
-            lim = buf + needed;
-            for (next = buf; next < lim; next += rtm->rtm_msglen) {
-                rtm = (struct rt_msghdr *)next;
-                
-                route_entry_t entry;
-                if (parse_route_message(rtm, &entry, fib) == 0) {
-                    if (route_table_add(table, &entry) != 0) {
-                        break; // Table full
-                    }
-                }
-            }
-            
-            free(buf);
         }
     }
     
+    free(buf);
     return table->count;
 }
 

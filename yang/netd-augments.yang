@@ -14,6 +14,24 @@ module netd-augments {
     reference
       "RFC 8529: A YANG Data Model for Network Instance Management";
   }
+  
+  import ietf-routing {
+    prefix rt;
+    reference
+      "RFC 8349: A YANG Data Model for Routing Management";
+  }
+  
+  import ietf-ipv4-unicast-routing {
+    prefix v4ur;
+    reference
+      "RFC 8349: A YANG Data Model for Routing Management";
+  }
+  
+  import ietf-ipv6-unicast-routing {
+    prefix v6ur;
+    reference
+      "RFC 8349: A YANG Data Model for Routing Management";
+  }
 
   organization "NetD Project";
   contact "netd@example.com";
@@ -58,6 +76,60 @@ module netd-augments {
          
          Commonly used with gif, tun, and tap interfaces for
          advanced routing topologies.";
+    }
+  }
+
+  augment "/rt:routing/rt:control-plane-protocols/rt:control-plane-protocol/rt:static-routes/v4ur:ipv4/v4ur:route" {
+    description
+      "Add FreeBSD-specific route flags to IPv4 static routes.
+       
+       This augmentation adds route flags that are specific to
+       FreeBSD's routing implementation, providing detailed
+       information about route characteristics.";
+    
+    leaf flags {
+      type string {
+        length "1..16";
+      }
+      description
+        "Route flags indicating route characteristics.
+         
+         Common flags include:
+         - U: Route is up
+         - G: Route is a gateway
+         - H: Route is a host route
+         - S: Route is static
+         - D: Route is dynamic
+         - M: Route was modified
+         - R: Route is rejected
+         - B: Route is a blackhole";
+    }
+  }
+
+  augment "/rt:routing/rt:control-plane-protocols/rt:control-plane-protocol/rt:static-routes/v6ur:ipv6/v6ur:route" {
+    description
+      "Add FreeBSD-specific route flags to IPv6 static routes.
+       
+       This augmentation adds route flags that are specific to
+       FreeBSD's routing implementation, providing detailed
+       information about route characteristics.";
+    
+    leaf flags {
+      type string {
+        length "1..16";
+      }
+      description
+        "Route flags indicating route characteristics.
+         
+         Common flags include:
+         - U: Route is up
+         - G: Route is a gateway
+         - H: Route is a host route
+         - S: Route is static
+         - D: Route is dynamic
+         - M: Route was modified
+         - R: Route is rejected
+         - B: Route is a blackhole";
     }
   }
 } 

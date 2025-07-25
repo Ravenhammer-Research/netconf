@@ -902,26 +902,16 @@ int handle_netconf_get_config(const char *filter, char *response, size_t resp_le
             
             if (strlen(dest) > 0 && strlen(gateway) > 0) {
                 
-                // Write route XML using standard IETF routing structure
-                if (current_fib >= 0) {
-                    xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
-                        "                <route>\n"
-                        "                  <destination-prefix>%s</destination-prefix>\n"
-                        "                  <next-hop>\n"
-                        "                    <next-hop-address>%s</next-hop-address>\n"
-                        "                  </next-hop>\n"
-                        "                </route>\n",
-                        dest, gateway);
-                } else {
+                // Write route XML using standard IETF routing structure with flags augmentation
                 xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
                     "                <route>\n"
                     "                  <destination-prefix>%s</destination-prefix>\n"
                     "                  <next-hop>\n"
                     "                    <next-hop-address>%s</next-hop-address>\n"
                     "                  </next-hop>\n"
+                    "                  <flags xmlns=\"urn:netd:augments\">%s</flags>\n"
                     "                </route>\n",
-                    dest, gateway);
-                }
+                    dest, gateway, flags);
             }
             
             line = strtok(NULL, "\n");
