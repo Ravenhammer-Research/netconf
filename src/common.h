@@ -97,6 +97,7 @@ typedef struct {
     struct in6_addr addr6;
     int prefix_len;
     int fib;
+    int tunnel_fib;  // FreeBSD-specific tunnel VRF/FIB
 } if_config_t;
 
 // Route configuration

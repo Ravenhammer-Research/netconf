@@ -1,0 +1,63 @@
+module netd-augments {
+  yang-version 1.1;
+  namespace "urn:netd:augments";
+  prefix netd-aug;
+
+  import ietf-interfaces {
+    prefix if;
+    reference
+      "RFC 8343: A YANG Data Model for Interface Management";
+  }
+  
+  import ietf-network-instance {
+    prefix ni;
+    reference
+      "RFC 8529: A YANG Data Model for Network Instance Management";
+  }
+
+  organization "NetD Project";
+  contact "netd@example.com";
+  
+  description
+    "This module provides FreeBSD-specific augmentations to standard
+     IETF YANG models. It extends the ietf-interfaces model with
+     tunnel VRF support which is specific to FreeBSD's networking
+     stack.
+     
+     The augmentations maintain compatibility with standard IETF
+     models while adding platform-specific functionality.";
+
+  revision 2025-01-01 {
+    description
+      "Initial version with tunnel VRF support for FreeBSD tunnel
+       interfaces (gif, tun, tap, etc.)";
+  }
+
+  /*
+   * Augmentations
+   */
+
+  augment "/if:interfaces/if:interface" {
+    description
+      "Add FreeBSD-specific tunnel VRF binding to interfaces.
+       
+       This augmentation allows tunnel interfaces to be bound to
+       a different VRF than their primary VRF, enabling advanced
+       tunnel routing scenarios specific to FreeBSD.";
+    
+    leaf tunnel-vrf {
+      type leafref {
+        path "/ni:network-instances/ni:network-instance/ni:name";
+      }
+      description
+        "Network instance (VRF) for tunnel traffic routing.
+         
+         This is specific to FreeBSD tunnel interfaces and allows
+         the tunnel traffic to be routed through a different VRF
+         than the interface's primary VRF binding.
+         
+         Commonly used with gif, tun, and tap interfaces for
+         advanced routing topologies.";
+    }
+  }
+} 

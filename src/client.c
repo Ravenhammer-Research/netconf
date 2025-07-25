@@ -55,9 +55,10 @@ typedef struct {
     char current_element[64];
     char ifname[64];
     char ipv4[64];
-    char prefix[8];
-    char fib[8];
-    char tunnel_fib[8];
+    char ipv6[64];
+    char prefix[8];  // Add back the prefix field
+    char vrf[64];  // Changed from fib to vrf
+    char tunnel_vrf[64];  // Changed from tunnel_fib to tunnel_vrf
     char dest[64];
     char next[64];
     int in_interface;
@@ -65,8 +66,8 @@ typedef struct {
     int in_name;
     int in_ip;
     int in_prefix;
-    int in_fib;
-    int in_tunnel_fib;
+    int in_vrf;  // Changed from in_fib to in_vrf
+    int in_tunnel_vrf;  // Changed from in_tunnel_fib to in_tunnel_vrf
     int in_dest;
     int in_next;
     int header_printed;
@@ -174,9 +175,10 @@ static void XMLCALL start_element_handler(void *userData, const XML_Char *name, 
         state->in_interface = 1;
         memset(state->ifname, 0, sizeof(state->ifname));
         memset(state->ipv4, 0, sizeof(state->ipv4));
+        memset(state->ipv6, 0, sizeof(state->ipv6));
         memset(state->prefix, 0, sizeof(state->prefix));
-        memset(state->fib, 0, sizeof(state->fib));
-        memset(state->tunnel_fib, 0, sizeof(state->tunnel_fib));
+        memset(state->vrf, 0, sizeof(state->vrf));
+        memset(state->tunnel_vrf, 0, sizeof(state->tunnel_vrf));
     } else if (strcmp(local_name, "route") == 0) {
         state->in_route = 1;
         memset(state->dest, 0, sizeof(state->dest));
@@ -187,10 +189,10 @@ static void XMLCALL start_element_handler(void *userData, const XML_Char *name, 
         state->in_ip = 1;
     } else if (strcmp(local_name, "prefix-length") == 0) {
         state->in_prefix = 1;
-    } else if (strcmp(local_name, "fib") == 0) {
-        state->in_fib = 1;
-    } else if (strcmp(local_name, "tunnel-fib") == 0) {
-        state->in_tunnel_fib = 1;
+    } else if (strcmp(local_name, "bind-ni-name") == 0) {
+        state->in_vrf = 1;  // bind-ni-name contains VRF name
+    } else if (strcmp(local_name, "tunnel-vrf") == 0) {
+        state->in_tunnel_vrf = 1;
     } else if (strcmp(local_name, "destination-prefix") == 0) {
         state->in_dest = 1;
     } else if (strcmp(local_name, "next-hop-address") == 0) {
@@ -225,11 +227,11 @@ static void XMLCALL end_element_handler(void *userData, const XML_Char *name) {
             }
             
             // Use FIB and TunnelFIB from XML, or default to "-" if not present
-            const char *fib_display = (strlen(state->fib) > 0) ? state->fib : "-";
-            const char *tunnel_fib_display = (strlen(state->tunnel_fib) > 0) ? state->tunnel_fib : "-";
+            const char *vrf_display = (strlen(state->vrf) > 0) ? state->vrf : "-";
+            const char *tunnel_vrf_display = (strlen(state->tunnel_vrf) > 0) ? state->tunnel_vrf : "-";
             
             printf("%-12s %-18s %-18s %-8s %-8s %s\n", 
-                   state->ifname, ipv4_display, "-", fib_display, tunnel_fib_display, "1500");
+                   state->ifname, ipv4_display, "-", vrf_display, tunnel_vrf_display, "1500");
         }
         state->in_interface = 0;
     } else if (strcmp(local_name, "route") == 0) {
@@ -244,10 +246,10 @@ static void XMLCALL end_element_handler(void *userData, const XML_Char *name) {
         state->in_ip = 0;
     } else if (strcmp(local_name, "prefix-length") == 0) {
         state->in_prefix = 0;
-    } else if (strcmp(local_name, "fib") == 0) {
-        state->in_fib = 0;
-    } else if (strcmp(local_name, "tunnel-fib") == 0) {
-        state->in_tunnel_fib = 0;
+    } else if (strcmp(local_name, "bind-ni-name") == 0) {
+        state->in_vrf = 0;
+    } else if (strcmp(local_name, "tunnel-vrf") == 0) {
+        state->in_tunnel_vrf = 0;
     } else if (strcmp(local_name, "destination-prefix") == 0) {
         state->in_dest = 0;
     } else if (strcmp(local_name, "next-hop-address") == 0) {
@@ -270,10 +272,10 @@ static void XMLCALL character_data_handler(void *userData, const XML_Char *s, in
         strncat(state->ipv4, s, len);
     } else if (state->in_prefix && state->in_interface) {
         strncat(state->prefix, s, len);
-    } else if (state->in_fib && state->in_interface) {
-        strncat(state->fib, s, len);
-    } else if (state->in_tunnel_fib && state->in_interface) {
-        strncat(state->tunnel_fib, s, len);
+    } else if (state->in_vrf && state->in_interface) {
+        strncat(state->vrf, s, len);
+    } else if (state->in_tunnel_vrf && state->in_interface) {
+        strncat(state->tunnel_vrf, s, len);
     } else if (state->in_dest && state->in_route) {
         strncat(state->dest, s, len);
     } else if (state->in_next && state->in_route) {
@@ -301,7 +303,7 @@ static void parse_and_display_response(const char *response) {
     
     // Check response type and print header if needed
     if (strstr(response, "interfaces") || strstr(response, "ietf-interfaces")) {
-        printf("Interface    IPv4 Address       IPv6 Address       FIB      TunnelFIB MTU\n");
+        printf("Interface    IPv4 Address       IPv6 Address       VRF      TunnelVRF MTU\n");
     }
     
     // Try to parse the response as XML
@@ -329,7 +331,7 @@ char* command_generator(const char* text, int state) {
     static const char* commands[] = {
         "show", "set", "delete", "commit", "save", "help", "quit", "exit",
         "interface", "route", "ethernet", "bridge", "gif", "tun", "tap",
-        "inet", "inet6", "addr", "protocol", "protocols", "static", "fib"
+        "inet", "inet6", "addr", "protocol", "protocols", "static", "vrf"
     };
     
     if (!state) {

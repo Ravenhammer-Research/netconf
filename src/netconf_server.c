@@ -713,13 +713,14 @@ int handle_netconf_get_config(const char *filter, char *response, size_t resp_le
                 xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
                     "      <interface>\n"
                     "        <name>%s</name>\n"
-                    "        <type>ethernetCsmacd</type>\n"
+                    "        <type xmlns:ianaift=\"urn:ietf:params:xml:ns:yang:iana-if-type\">ianaift:ethernetCsmacd</type>\n"
                     "        <enabled>true</enabled>\n",
                     ifname);
                 
                 if (strcmp(ipv4, "-") != 0) {
                     xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
                         "        <ipv4 xmlns=\"urn:ietf:params:xml:ns:yang:ietf-ip\">\n"
+                        "          <enabled>true</enabled>\n"
                         "          <address>\n"
                         "            <ip>%s</ip>\n"
                         "            <prefix-length>%d</prefix-length>\n"
@@ -728,16 +729,13 @@ int handle_netconf_get_config(const char *filter, char *response, size_t resp_le
                         ip, prefix_len);
                 }
                 
-                // Add FIB information if available
-                if (strcmp(fib, "-") != 0) {
-                    xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
-                        "        <fib>%s</fib>\n", fib);
-                }
+                // Note: FIB and TunnelFIB are not part of standard IETF interfaces model
+                // These would be handled by vendor-specific augmentations if needed
                 
-                // Add TunnelFIB information if available
+                // Add tunnel VRF from custom augmentation if available
                 if (strcmp(tunnelfib, "-") != 0) {
                     xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
-                        "        <tunnel-fib>%s</tunnel-fib>\n", tunnelfib);
+                        "        <tunnel-vrf xmlns=\"urn:netd:augments\">tunnel-vrf-%s</tunnel-vrf>\n", tunnelfib);
                 }
                 
                 xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos, "      </interface>\n");
@@ -828,12 +826,12 @@ int handle_netconf_get_config(const char *filter, char *response, size_t resp_le
             "<rpc-reply message-id=\"1\" xmlns=\"urn:ietf:params:xml:ns:netconf:base:1.0\">\n"
             "  <data>\n"
             "    <routing xmlns=\"urn:ietf:params:xml:ns:yang:ietf-routing\">\n"
-            "      <routing-instance>\n"
-            "        <name>default</name>\n"
-            "        <routing-protocols>\n"
-            "          <routing-protocol>\n"
-            "            <type>static</type>\n"
-            "            <static-routes>\n");
+            "      <control-plane-protocols>\n"
+            "        <control-plane-protocol>\n"
+            "          <type xmlns:rt=\"urn:ietf:params:xml:ns:yang:ietf-routing\">rt:static</type>\n"
+            "          <name>static-routing</name>\n"
+            "          <static-routes>\n"
+            "            <ipv4>\n");
         
         // Parse the route data line by line and convert to XML
         char *line = strtok(route_data, "\n");
@@ -904,25 +902,24 @@ int handle_netconf_get_config(const char *filter, char *response, size_t resp_le
             
             if (strlen(dest) > 0 && strlen(gateway) > 0) {
                 
-                // Write route XML with FIB information if available
+                // Write route XML using standard IETF routing structure
                 if (current_fib >= 0) {
                     xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
-                        "              <route>\n"
-                        "                <destination-prefix>%s</destination-prefix>\n"
-                        "                <next-hop>\n"
-                        "                  <next-hop-address>%s</next-hop-address>\n"
-                        "                </next-hop>\n"
-                        "                <fib>%d</fib>\n"
-                        "              </route>\n",
-                        dest, gateway, current_fib);
+                        "                <route>\n"
+                        "                  <destination-prefix>%s</destination-prefix>\n"
+                        "                  <next-hop>\n"
+                        "                    <next-hop-address>%s</next-hop-address>\n"
+                        "                  </next-hop>\n"
+                        "                </route>\n",
+                        dest, gateway);
                 } else {
                 xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
-                    "              <route>\n"
-                    "                <destination-prefix>%s</destination-prefix>\n"
-                    "                <next-hop>\n"
-                    "                  <next-hop-address>%s</next-hop-address>\n"
-                    "                </next-hop>\n"
-                    "              </route>\n",
+                    "                <route>\n"
+                    "                  <destination-prefix>%s</destination-prefix>\n"
+                    "                  <next-hop>\n"
+                    "                    <next-hop-address>%s</next-hop-address>\n"
+                    "                  </next-hop>\n"
+                    "                </route>\n",
                     dest, gateway);
                 }
             }
@@ -932,10 +929,10 @@ int handle_netconf_get_config(const char *filter, char *response, size_t resp_le
         
         // Write closing tags
         xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
-            "            </static-routes>\n"
-            "          </routing-protocol>\n"
-            "        </routing-protocols>\n"
-            "      </routing-instance>\n"
+            "            </ipv4>\n"
+            "          </static-routes>\n"
+            "        </control-plane-protocol>\n"
+            "      </control-plane-protocols>\n"
             "    </routing>\n"
             "  </data>\n"
             "</rpc-reply>");
@@ -1016,13 +1013,14 @@ int handle_netconf_get_config(const char *filter, char *response, size_t resp_le
             xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
                 "      <interface>\n"
                 "        <name>%s</name>\n"
-                "        <type>ethernetCsmacd</type>\n"
+                "        <type xmlns:ianaift=\"urn:ietf:params:xml:ns:yang:iana-if-type\">ianaift:ethernetCsmacd</type>\n"
                 "        <enabled>true</enabled>\n",
                 ifname);
             
             if (strcmp(ipv4, "-") != 0) {
                 xml_pos += snprintf(xml_buffer + xml_pos, resp_len - xml_pos,
                     "        <ipv4 xmlns=\"urn:ietf:params:xml:ns:yang:ietf-ip\">\n"
+                    "          <enabled>true</enabled>\n"
                     "          <address>\n"
                     "            <ip>%s</ip>\n"
                     "            <prefix-length>%d</prefix-length>\n"

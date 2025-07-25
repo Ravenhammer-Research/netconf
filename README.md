@@ -8,14 +8,16 @@ A FreeBSD application that provides ifconfig and route functionality using a NET
 - Interactive and one-shot command modes
 - Interface configuration
 - Route management
+- VRF (Virtual Routing and Forwarding) support
 - Configuration persistence
-- YANG model integration
+- Standard IETF YANG model integration (RFC 8343, RFC 8344, RFC 8349, RFC 8529)
 
 ## Prerequisites
 
 - FreeBSD system
 - libnetconf2 development libraries
 - libyang development libraries
+- Standard IETF YANG models (included in yang/std/standard/ietf/RFC/)
 
 Install dependencies:
 ```bash
@@ -148,6 +150,29 @@ net show interface
 
 # Show tap interfaces only
 net show interface tap
+```
+
+## YANG Models
+
+This project uses standard IETF YANG models with custom FreeBSD-specific augmentations:
+
+### Standard IETF Models:
+- **ietf-interfaces** (RFC 8343): Interface management and configuration
+- **ietf-ip** (RFC 8344): IP address configuration for interfaces  
+- **ietf-routing** (RFC 8349): Routing table management and static routes
+- **ietf-network-instance** (RFC 8529): Virtual Routing and Forwarding (VRF) management
+- **ietf-inet-types**: Common Internet address and port types
+- **ietf-yang-types**: Common YANG data types
+- **iana-if-type**: Standard interface type definitions
+
+### Custom Augmentations:
+- **netd-augments**: FreeBSD-specific extensions including:
+  - `tunnel-vrf`: Tunnel VRF binding for advanced FreeBSD tunnel routing
+  - Platform-specific features not covered by standard IETF models
+
+The standard models are located in `yang/std/standard/ietf/RFC/` and custom 
+augmentations in `yang/netd-augments.yang`. This approach provides standards-compliant 
+NETCONF operations while supporting FreeBSD-specific functionality.
 
 ## License
 

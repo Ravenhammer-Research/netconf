@@ -46,7 +46,9 @@ clean:
 install: net netd
 	install -m 755 net /usr/local/bin/
 	install -m 755 netd /usr/local/sbin/
+	# Install custom YANG augmentation for FreeBSD-specific features
 	install -d /usr/local/share/yang
-	install -m 644 yang/netd-simple.yang /usr/local/share/yang/
+	install -m 644 yang/netd-augments.yang /usr/local/share/yang/
+	# Note: Standard IETF YANG models loaded from yang/std/standard/ietf/RFC/
 
 .PHONY: all clean install
