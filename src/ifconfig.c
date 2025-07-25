@@ -102,26 +102,39 @@ static int get_interface_flags(const char *ifname, int *flags) {
  * @return 0 on success, -1 on failure
  */
 static int create_interface(const char *ifname) {
-    // For FreeBSD, we need to create tap interfaces properly
-    // First, create the tap interface
-    char cmd[256];
-    snprintf(cmd, sizeof(cmd), "ifconfig %s create", ifname);
-    
-    int result = system(cmd);
-    if (result != 0) {
-        printf("DEBUG: Failed to create interface with ifconfig (result: %d)\n", result);
+    // For FreeBSD, we can create interfaces using ioctl
+    // This works for most interface types including tap interfaces
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        printf("DEBUG: Failed to create socket for interface creation\n");
         return -1;
     }
     
-    // Then bring it up
-    snprintf(cmd, sizeof(cmd), "ifconfig %s up", ifname);
-    result = system(cmd);
-    if (result != 0) {
-        printf("DEBUG: Failed to bring interface up (result: %d)\n", result);
+    struct ifreq ifr;
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+    
+    // Try to create the interface using SIOCIFCREATE
+    int result = ioctl(sock, SIOCIFCREATE, &ifr);
+    if (result < 0) {
+        // If SIOCIFCREATE fails, the interface might already exist
+        // or we might need to use a different approach for this interface type
+        printf("DEBUG: SIOCIFCREATE failed for %s (errno: %d, %s)\n", 
+               ifname, errno, strerror(errno));
+        
+        // Check if interface already exists
+        if (ioctl(sock, SIOCGIFFLAGS, &ifr) >= 0) {
+            printf("DEBUG: Interface %s already exists\n", ifname);
+            close(sock);
+            return 0;
+        }
+        
+        close(sock);
         return -1;
     }
     
-    printf("DEBUG: Successfully created and brought up interface %s\n", ifname);
+    printf("DEBUG: Successfully created interface %s\n", ifname);
+    close(sock);
     return 0;
 }
 
@@ -240,39 +253,100 @@ static int get_interface_ipv6(const char *ifname, char *addr_str, size_t addr_le
 }
 
 /**
- * Get FIB number for an interface by querying the system
+ * Get FIB number for an interface using routing socket API
  * @param ifname Interface name
  * @param fib_str Buffer to store FIB number as string
  * @param fib_len Size of FIB string buffer
  * @return 0 on success, -1 on failure
  */
 static int get_interface_fib(const char *ifname, char *fib_str, size_t fib_len) {
-    // Use ifconfig to get the actual FIB number from the system
-    char cmd[256];
-    char line[512];
-    FILE *fp;
-    
-    snprintf(cmd, sizeof(cmd), "ifconfig %s", ifname);
-    fp = popen(cmd, "r");
-    if (!fp) {
+    int sock = socket(AF_ROUTE, SOCK_RAW, 0);
+    if (sock < 0) {
         snprintf(fib_str, fib_len, "0");
         return 0;
     }
     
-    while (fgets(line, sizeof(line), fp)) {
-        // Look for "fib: 28" in the ifconfig output
-        char *fib_pos = strstr(line, "fib:");
-        if (fib_pos) {
-            int fib_num = 0;
-            if (sscanf(fib_pos, "fib: %d", &fib_num) == 1) {
-                pclose(fp);
-                snprintf(fib_str, fib_len, "%d", fib_num);
-                return 0;
-            }
-        }
+    // Try to get the number of FIBs first
+    int num_fibs = 1;
+    size_t len = sizeof(num_fibs);
+    if (sysctlbyname("net.fibs", &num_fibs, &len, NULL, 0) == -1) {
+        // Single FIB system, default to 0
+        close(sock);
+        snprintf(fib_str, fib_len, "0");
+        return 0;
     }
     
-    pclose(fp);
+    // Check each FIB to see if this interface has routes in it
+    for (int fib = 0; fib < num_fibs; fib++) {
+        // Set the FIB for this socket
+        if (setsockopt(sock, SOL_SOCKET, SO_SETFIB, &fib, sizeof(fib)) < 0) {
+            continue; // Skip this FIB if we can't set it
+        }
+        
+        // Query routing table for this FIB
+        int mib[7];
+        size_t needed;
+        char *buf;
+        
+        mib[0] = CTL_NET;
+        mib[1] = PF_ROUTE;
+        mib[2] = 0;        /* protocol */
+        mib[3] = AF_UNSPEC;
+        mib[4] = NET_RT_DUMP;
+        mib[5] = 0;        /* no flags */
+        mib[6] = fib;
+        
+        // Get required buffer size
+        if (sysctl(mib, 7, NULL, &needed, NULL, 0) < 0) {
+            continue; // Skip this FIB
+        }
+        
+        // Allocate buffer
+        buf = malloc(needed);
+        if (!buf) {
+            continue;
+        }
+        
+        // Get route data
+        if (sysctl(mib, 7, buf, &needed, NULL, 0) < 0) {
+            free(buf);
+            continue;
+        }
+        
+        // Parse route messages to find interface
+        char *next = buf;
+        char *lim = buf + needed;
+        struct rt_msghdr *rtm;
+        
+        while (next < lim) {
+            rtm = (struct rt_msghdr *)next;
+            
+            // Check if this route uses our interface
+            const struct sockaddr *sa = (const struct sockaddr *)(rtm + 1);
+            for (int i = 0; i < RTAX_MAX; i++) {
+                if (rtm->rtm_addrs & (1 << i)) {
+                    if (i == RTAX_IFP && sa->sa_family == AF_LINK) {
+                        const struct sockaddr_dl *sdl = (const struct sockaddr_dl *)sa;
+                        if (sdl->sdl_nlen > 0 && 
+                            strncmp(sdl->sdl_data, ifname, sdl->sdl_nlen) == 0 &&
+                            strlen(ifname) == sdl->sdl_nlen) {
+                            // Found our interface in this FIB
+                            free(buf);
+                            close(sock);
+                            snprintf(fib_str, fib_len, "%d", fib);
+                            return 0;
+                        }
+                    }
+                    sa = (const struct sockaddr *)((const char *)sa + sa->sa_len);
+                }
+            }
+            next += rtm->rtm_msglen;
+        }
+        
+        free(buf);
+    }
+    
+    close(sock);
     
     // If no FIB found, default to 0
     snprintf(fib_str, fib_len, "0");
@@ -432,18 +506,46 @@ static int set_interface_address_ipv4(const char *ifname, const struct in_addr *
     printf("DEBUG: Address: %s, Prefix: %d\n", inet_ntoa(*addr), prefix_len);
     printf("DEBUG: Running as UID: %d\n", getuid());
     
-    // Use system call to run ifconfig directly
-    char cmd[256];
-    snprintf(cmd, sizeof(cmd), "ifconfig %s inet %s/%d", ifname, inet_ntoa(*addr), prefix_len);
-    
-    printf("DEBUG: Running command: %s\n", cmd);
-    int result = system(cmd);
-    if (result != 0) {
-        printf("DEBUG: Failed to set address with ifconfig (result: %d)\n", result);
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        printf("DEBUG: Failed to create socket for IPv4 address setting\n");
         return -1;
     }
     
-    printf("DEBUG: Successfully set address with ifconfig\n");
+    struct ifreq ifr;
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+    
+    // Set the IPv4 address
+    struct sockaddr_in *sin = (struct sockaddr_in*)&ifr.ifr_addr;
+    sin->sin_family = AF_INET;
+    sin->sin_addr = *addr;
+    
+    int result = ioctl(sock, SIOCSIFADDR, &ifr);
+    if (result < 0) {
+        printf("DEBUG: Failed to set IPv4 address with ioctl (errno: %d, %s)\n", 
+               errno, strerror(errno));
+        close(sock);
+        return -1;
+    }
+    
+    // Set the netmask based on prefix length
+    if (prefix_len > 0 && prefix_len <= 32) {
+        uint32_t netmask = 0xFFFFFFFF << (32 - prefix_len);
+        struct sockaddr_in *sin_netmask = (struct sockaddr_in*)&ifr.ifr_addr;
+        sin_netmask->sin_family = AF_INET;
+        sin_netmask->sin_addr.s_addr = htonl(netmask);
+        
+        result = ioctl(sock, SIOCSIFNETMASK, &ifr);
+        if (result < 0) {
+            printf("DEBUG: Failed to set netmask with ioctl (errno: %d, %s)\n", 
+                   errno, strerror(errno));
+            // Don't fail completely if netmask setting fails
+        }
+    }
+    
+    close(sock);
+    printf("DEBUG: Successfully set IPv4 address with ioctl\n");
     return 0;
 }
 

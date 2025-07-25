@@ -48,6 +48,7 @@
 #include "common.h"
 #include <bsdxml.h>
 #include <sys/stat.h>
+#include <ctype.h>
 
 #define CONFIG_FILE "/usr/local/etc/net.xml"
 #define CONFIG_BACKUP "/usr/local/etc/net.xml.bak"
@@ -863,7 +864,7 @@ int handle_netconf_get_config(const char *filter, char *response, size_t resp_le
             // Parse destination
             char *dest_start = p;
             while (*p && !isspace(*p)) p++;
-            int dest_len = p - dest_start;
+            size_t dest_len = p - dest_start;
             if (dest_len >= sizeof(dest)) dest_len = sizeof(dest) - 1;
             strncpy(dest, dest_start, dest_len);
             dest[dest_len] = '\0';
@@ -874,7 +875,7 @@ int handle_netconf_get_config(const char *filter, char *response, size_t resp_le
             // Parse gateway
             char *gateway_start = p;
             while (*p && !isspace(*p)) p++;
-            int gateway_len = p - gateway_start;
+            size_t gateway_len = p - gateway_start;
             if (gateway_len >= sizeof(gateway)) gateway_len = sizeof(gateway) - 1;
             strncpy(gateway, gateway_start, gateway_len);
             gateway[gateway_len] = '\0';
@@ -885,7 +886,7 @@ int handle_netconf_get_config(const char *filter, char *response, size_t resp_le
             // Parse flags
             char *flags_start = p;
             while (*p && !isspace(*p)) p++;
-            int flags_len = p - flags_start;
+            size_t flags_len = p - flags_start;
             if (flags_len >= sizeof(flags)) flags_len = sizeof(flags) - 1;
             strncpy(flags, flags_start, flags_len);
             flags[flags_len] = '\0';
@@ -896,7 +897,7 @@ int handle_netconf_get_config(const char *filter, char *response, size_t resp_le
             // Parse interface
             char *interface_start = p;
             while (*p && !isspace(*p)) p++;
-            int interface_len = p - interface_start;
+            size_t interface_len = p - interface_start;
             if (interface_len >= sizeof(interface)) interface_len = sizeof(interface) - 1;
             strncpy(interface, interface_start, interface_len);
             interface[interface_len] = '\0';
