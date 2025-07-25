@@ -1,4 +1,0 @@
-*.o
-net
-netd
-tests/unit/test_commands
